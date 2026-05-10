@@ -1,0 +1,901 @@
+(***********************************************************************)
+(*                                                                     *)
+(* Copyright (c) 2007-present.                                         *)
+(* Programming Research Laboratory (ROPAS), Seoul National University. *)
+(* All rights reserved.                                                *)
+(*                                                                     *)
+(* This software is distributed under the term of the BSD license.     *)
+(* See the LICENSE file for details.                                   *)
+(*                                                                     *)
+(***********************************************************************)
+(** Semantics of interval analysis *)
+open Vocab
+open Sparrow_cil
+open IntraCfg
+open AbsSem
+open BasicDom
+open ItvDom
+open Global
+open ArrayBlk
+open BatTuple
+
+module Dom = ItvDom.Mem
+module Access = Dom.Access
+module Spec = Spec.Make(Dom)
+
+(* ********************** *
+ * Abstract memory access *
+ * ********************** *)
+let can_strong_update : update_mode -> Spec.t -> Global.t -> PowLoc.t -> bool
+= fun mode spec global lvs ->
+  if spec.Spec.unsound_update then true
+  else
+    match mode,lvs with
+    | Weak, _ -> false
+    | Strong, lvs' ->
+      if PowLoc.cardinal lvs' = 1 then
+        let lv = PowLoc.choose lvs' in
+        Loc.is_gvar lv ||
+        (Loc.is_lvar lv && not (Global.is_rec (Loc.get_proc lv) global))
+      else false
+
+let lookup : PowLoc.t -> Mem.t -> Val.t
+= fun locs mem ->
+  Mem.lookup locs mem
+
+let update : update_mode -> Spec.t -> Global.t -> PowLoc.t -> Val.t -> Mem.t -> Mem.t
+= fun mode spec global locs v mem ->
+  if can_strong_update mode spec global locs then Mem.strong_update locs v mem
+  else Mem.weak_update locs v mem
+
+(* ********************************** *
+ * Semantic functions for expressions *
+ * ********************************** *)
+
+let eval_const : Sparrow_cil.constant -> Val.t = fun cst ->
+  match cst with
+  | Sparrow_cil.CInt (i64, _, _) ->
+    let itv = try Itv.of_int (Cilint.to_int i64) with _ -> Itv.top in
+    Val.of_itv itv
+  | Sparrow_cil.CStr (s, _) -> Val.of_itv Itv.top
+  | Sparrow_cil.CWStr (s, _) -> Val.of_itv Itv.top
+  | Sparrow_cil.CChr c -> Val.of_itv (Itv.of_int (int_of_char c))
+  (* Float numbers are modified to itvs.  If you want to make a
+     precise and sound analysis for float numbers, you have to
+     develop a domain for them. *)
+  | Sparrow_cil.CReal (f, _, _) ->
+    Val.of_itv (Itv.of_ints (int_of_float (floor f)) (int_of_float (ceil f)))
+  (* Enum is not evaluated correctly in our analysis. *)
+  | Sparrow_cil.CEnum _ -> Val.of_itv Itv.top
+
+let eval_uop : Spec.t -> Sparrow_cil.unop -> Val.t -> Val.t
+= fun spec u v ->
+  if Val.eq v Val.bot then Val.bot else
+    let itv = Val.itv_of_val v in
+    let itv' =
+      match u with
+      | Sparrow_cil.Neg -> Itv.minus (Itv.of_int 0) itv
+      | Sparrow_cil.LNot -> Itv.l_not itv
+      | Sparrow_cil.BNot -> if spec.Spec.unsound_bitwise then Itv.bot else Itv.unknown_unary itv
+    in
+    Val.of_itv itv'
+
+let eval_bop : Spec.t -> Sparrow_cil.binop -> Val.t -> Val.t -> Val.t
+= fun spec b v1 v2 ->
+  match b with
+  | Sparrow_cil.PlusA -> Val.of_itv (Itv.plus (Val.itv_of_val v1) (Val.itv_of_val v2))
+  | Sparrow_cil.PlusPI
+  | Sparrow_cil.IndexPI ->
+    let ablk = Val.array_of_val v1 in
+    let offset = Val.itv_of_val v2 in
+    let ablk = ArrayBlk.plus_offset ablk offset in
+    Val.join (Val.of_pow_loc (Val.pow_loc_of_val v1)) (Val.of_array ablk)
+  | Sparrow_cil.MinusA -> Val.of_itv (Itv.minus (Val.itv_of_val v1) (Val.itv_of_val v2))
+  | Sparrow_cil.MinusPI ->
+    let ablk = Val.array_of_val v1 in
+    let offset = Val.itv_of_val v2 in
+    let ablk = ArrayBlk.minus_offset ablk offset in
+    Val.join (Val.of_pow_loc (Val.pow_loc_of_val v1)) (Val.of_array ablk)
+  | Sparrow_cil.MinusPP ->
+    let offset1 = Val.array_of_val v1 |> ArrayBlk.offsetof in
+    let offset2 = Val.array_of_val v2 |> ArrayBlk.offsetof in
+    Itv.minus offset1 offset2 |> Val.of_itv
+  | Sparrow_cil.Mult -> Val.of_itv (Itv.times (Val.itv_of_val v1) (Val.itv_of_val v2))
+  | Sparrow_cil.Div -> Val.of_itv (Itv.divide (Val.itv_of_val v1) (Val.itv_of_val v2))
+  | Sparrow_cil.Lt -> Val.of_itv (Itv.lt_itv (Val.itv_of_val v1) (Val.itv_of_val v2))
+  | Sparrow_cil.Gt -> Val.of_itv (Itv.gt_itv (Val.itv_of_val v1) (Val.itv_of_val v2))
+  | Sparrow_cil.Le -> Val.of_itv (Itv.le_itv (Val.itv_of_val v1) (Val.itv_of_val v2))
+  | Sparrow_cil.Ge -> Val.of_itv (Itv.ge_itv (Val.itv_of_val v1) (Val.itv_of_val v2))
+  | Sparrow_cil.Eq -> Val.of_itv (Itv.eq_itv (Val.itv_of_val v1) (Val.itv_of_val v2))
+  | Sparrow_cil.Ne -> Val.of_itv (Itv.ne_itv (Val.itv_of_val v1) (Val.itv_of_val v2))
+  | Sparrow_cil.LAnd -> Val.of_itv (Itv.l_and (Val.itv_of_val v1) (Val.itv_of_val v2))
+  | Sparrow_cil.LOr -> Val.of_itv (Itv.l_or (Val.itv_of_val v1) (Val.itv_of_val v2))
+  | Sparrow_cil.Shiftlt ->
+    if spec.Spec.unsound_bitwise then v1
+    else Val.of_itv (Itv.l_shift (Val.itv_of_val v1) (Val.itv_of_val v2))
+  | Sparrow_cil.Shiftrt | Sparrow_cil.Mod | Sparrow_cil.BAnd | Sparrow_cil.BXor | Sparrow_cil.BOr ->
+    if spec.Spec.unsound_bitwise then v1
+    else Val.of_itv (Itv.unknown_binary (Val.itv_of_val v1) (Val.itv_of_val v2))
+
+
+let rec resolve_offset : Spec.t -> Proc.t -> Val.t -> Sparrow_cil.offset -> Mem.t -> PowLoc.t
+= fun spec pid v os mem ->
+  match os with
+  | Sparrow_cil.NoOffset ->
+      PowLoc.join (Val.pow_loc_of_val v) (Val.array_of_val v |> ArrayBlk.pow_loc_of_array)
+  | Sparrow_cil.Field (f, os') ->
+    let (ploc, arr, str) = (Val.pow_loc_of_val v, Val.array_of_val v, Val.struct_of_val v) in
+    let v =
+      lookup ploc mem
+      |> Val.struct_of_val
+      |> flip StructBlk.append_field f                  (* S s; p = &s; p->f *)
+      |> PowLoc.join (ArrayBlk.append_field arr f)      (* p = (struct S* )malloc(sizeof(struct S)); p->f *)
+      |> PowLoc.join (StructBlk.append_field str f)     (* S s; s.f *)
+      |> Val.of_pow_loc
+    in
+    resolve_offset spec pid v os' mem
+  | Sparrow_cil.Index (e, os') ->
+    let ploc = Val.pow_loc_of_val v in
+    let arr = lookup ploc mem |> Val.array_of_val in
+    let _ = eval ~spec pid e mem in (* NOTE: to sync with access function *)
+    resolve_offset spec pid (ArrayBlk.pow_loc_of_array arr |> Val.of_pow_loc)  os' mem
+and eval_lv ?(spec=Spec.empty) : Proc.t -> Sparrow_cil.lval -> Mem.t -> PowLoc.t
+= fun pid lv mem ->
+  let v =
+    match fst lv with
+    | Sparrow_cil.Var vi ->
+      var_of_varinfo vi pid
+      |> PowLoc.singleton
+      |> Val.of_pow_loc
+    | Sparrow_cil.Mem e ->
+      eval ~spec pid e mem
+  in
+  PowLoc.remove Loc.null (resolve_offset spec pid v (snd lv) mem)
+
+and var_of_varinfo vi pid  =
+  if vi.Sparrow_cil.vglob then Loc.of_gvar vi.Sparrow_cil.vname vi.Sparrow_cil.vtype
+  else Loc.of_lvar pid vi.Sparrow_cil.vname vi.Sparrow_cil.vtype
+
+and eval ?(spec=Spec.empty) : Proc.t -> Sparrow_cil.exp -> Mem.t -> Val.t
+= fun pid e mem ->
+  match e with
+  | Sparrow_cil.Const c -> eval_const c
+  | Sparrow_cil.Lval l -> lookup (eval_lv ~spec pid l mem) mem
+  | Sparrow_cil.SizeOf t -> Val.of_itv (try CilHelper.byteSizeOf t |> Itv.of_int with _ -> Itv.pos)
+  | Sparrow_cil.SizeOfE e -> Val.of_itv (try CilHelper.byteSizeOf (Sparrow_cil.typeOf e) |> Itv.of_int with _ -> Itv.pos)
+  | Sparrow_cil.SizeOfStr s -> Val.of_itv (Itv.of_int (String.length s + 1))
+  | Sparrow_cil.AlignOf t -> Val.of_itv (Itv.of_int (Sparrow_cil.alignOf_int t))
+  (* TODO: type information is required for precise semantics of AlignOfE.  *)
+  | Sparrow_cil.AlignOfE _ -> Val.of_itv Itv.top
+  | Sparrow_cil.UnOp (u, e, _) -> eval_uop spec u (eval ~spec pid e mem)
+  | Sparrow_cil.BinOp (b, e1, e2, _) ->
+    eval_bop spec b (eval ~spec pid e1 mem) (eval ~spec pid e2 mem)
+  | Sparrow_cil.Question (e1, e2, e3, _) ->
+    let i1 = Val.itv_of_val (eval ~spec pid e1 mem) in
+    if Itv.is_bot i1 then
+      Val.bot
+    else if Itv.eq (Itv.of_int 0) i1 then
+      eval ~spec pid e3 mem
+    else if not (Itv.le (Itv.of_int 0) i1) then
+      eval ~spec pid e2 mem
+    else
+      Val.join (eval ~spec pid e2 mem) (eval ~spec pid e3 mem)
+  | Sparrow_cil.Real e | Sparrow_cil.Imag e -> Val.of_itv Itv.top
+  | Sparrow_cil.CastE (_, t, e) ->
+    let v = eval ~spec pid e mem in
+    (try Val.cast (Sparrow_cil.typeOf e) t v with _ -> v)
+  | Sparrow_cil.AddrOf l -> eval_lv ~spec pid l mem |> Val.of_pow_loc
+  | Sparrow_cil.AddrOfLabel _ ->
+    invalid_arg "itvSem.ml:eval AddrOfLabel mem. \
+                 Analysis does not support label values."
+  | Sparrow_cil.StartOf l -> lookup (eval_lv ~spec pid l mem) mem
+
+
+let eval_list : Spec.t -> Proc.t -> Sparrow_cil.exp list -> Mem.t -> Val.t list
+= fun spec pid exps mem ->
+  List.map (fun e -> eval ~spec pid e mem) exps
+
+let eval_array_alloc ?(spec=Spec.empty) : Node.t -> Sparrow_cil.exp -> bool -> Mem.t -> Val.t
+= fun node e is_static mem ->
+  let pid = Node.get_pid node in
+  let allocsite = Allocsite.allocsite_of_node node in
+  let o = Itv.of_int 0 in
+  let sz = Val.itv_of_val (eval ~spec pid e mem) in
+  (* NOTE: stride is always one when allocating memory. *)
+  let st = Itv.of_int 1 in
+  let np = Itv.nat in
+  let pow_loc = if is_static then PowLoc.bot else PowLoc.singleton Loc.null in
+  let array = ArrayBlk.make allocsite o sz st np in
+  Val.join (Val.of_pow_loc pow_loc) (Val.of_array array)
+
+let eval_struct_alloc : PowLoc.t -> Sparrow_cil.compinfo -> Val.t
+= fun lv comp ->
+  StructBlk.make lv comp |> Val.of_struct
+
+let eval_string_alloc : Node.t -> string -> Mem.t -> Val.t
+= fun node s mem ->
+  let allocsite = Allocsite.allocsite_of_string node in
+  let o = Itv.of_int 0 in
+  let sz = Itv.of_int (String.length s + 1) in
+  let st = Itv.of_int 1 in
+  let np = Itv.of_int (String.length s) in
+  let array = ArrayBlk.make allocsite o sz st np in
+  Val.of_array array
+
+
+let eval_string : string -> Val.t = fun s ->
+  Val.of_itv Itv.nat
+
+(* ****************************** *
+ * Semantic functions for pruning *
+ * ****************************** *)
+
+let rec prune_simple : update_mode -> Spec.t -> Global.t -> Proc.t -> exp -> Mem.t
+  -> Mem.t
+= fun mode spec global pid cond mem ->
+  match cond with
+  | BinOp (op, Lval x, e, t)
+    when op = Lt || op = Gt || op = Le || op = Ge || op = Eq || op = Ne ->
+    let x_lv = eval_lv ~spec pid x mem in
+    if PowLoc.cardinal x_lv = 1 then
+      let x_v = lookup x_lv mem in
+      let e_v = eval ~spec pid e mem |> Val.itv_of_val in
+      let x_itv = Val.itv_of_val x_v in
+      let x_ploc = Val.pow_loc_of_val x_v in
+      let x_itv = Itv.prune op x_itv e_v in
+      let x_ploc = PowLoc.prune op x_ploc e in
+      let x_pruned = Val.make (x_itv, x_ploc, Val.array_of_val x_v, Val.struct_of_val x_v, Val.pow_proc_of_val x_v) in
+      update mode spec global x_lv x_pruned mem
+    else mem
+  | BinOp (op, e1, e2, _) when op = LAnd || op = LOr ->
+    let mem1 = prune_simple mode spec global pid e1 mem in
+    let mem2 = prune_simple mode spec global pid e2 mem in
+    if op = LAnd then Mem.meet mem1 mem2 else Mem.join mem1 mem2
+  | UnOp (LNot, Lval x, _) ->
+    let x_lv = eval_lv ~spec pid x mem in
+    if PowLoc.cardinal x_lv = 1 then
+      let x_v = lookup x_lv mem in
+      let x_itv = Val.itv_of_val x_v in
+      let e_v = Itv.zero in
+      let x_itv = Itv.meet x_itv e_v in
+      let x_pruned = Val.modify_itv x_itv x_v in
+      update mode spec global x_lv x_pruned mem
+    else mem
+  | Lval x ->
+    let x_lv = eval_lv ~spec pid x mem in
+    if PowLoc.cardinal x_lv = 1 then
+      let x_v = lookup x_lv mem in
+      let x_itv = Val.itv_of_val x_v in
+      let pos_x = Itv.meet x_itv Itv.pos in
+      let neg_x = Itv.meet x_itv Itv.neg in
+      let x_itv = Itv.join pos_x neg_x in
+      let x_pruned = Val.modify_itv x_itv x_v in
+      update mode spec global x_lv x_pruned mem
+    else mem
+  | _ -> mem
+
+let prune : update_mode -> Spec.t -> Global.t -> Proc.t -> exp -> Mem.t -> Mem.t
+= fun mode spec global pid cond mem ->
+  match CilHelper.make_cond_simple cond with
+  | None -> mem
+  | Some cond_simple -> prune_simple mode spec global pid cond_simple mem
+
+(* ******************************* *
+ * Semantic functions for commands *
+ * ******************************* *)
+let sparrow_print spec pid exps mem loc =
+  if !Options.verbose < 1 then ()
+  else
+    let vs = eval_list spec pid exps mem in
+    let vs_str = string_of_list Val.to_string vs in
+    let exps_str = string_of_list CilHelper.s_exp exps in
+    prerr_endline
+      ("sparrow_print (" ^ exps_str ^ " @ " ^ CilHelper.s_location loc ^ ") : "
+       ^ vs_str)
+
+let sparrow_dump mem loc =
+  if !Options.verbose < 1 then ()
+  else
+    prerr_endline
+      ("sparrow_dump (" ^ CilHelper.s_location loc ^ ") : \n"
+       ^ Mem.to_string mem)
+
+let return_struct_type f =
+  match f.vtype with
+  | Sparrow_cil.TFun (Sparrow_cil.TPtr (t, _), _, _, _) -> t
+  | _ -> assert false
+
+let model_alloc_one mode spec pid lvo f (mem, global) =
+  match lvo with
+    None -> (mem, global)
+  | Some lv ->
+    let size = try Itv.of_int (return_struct_type f |> CilHelper.byteSizeOf) with _ -> Itv.top in
+    let allocsite = Allocsite.allocsite_of_ext (Some f.vname) in
+    let arr_val = ItvDom.Val.of_array (ArrayBlk.make allocsite Itv.zero Itv.one size Itv.nat) in
+    let ext_loc = PowLoc.singleton (Loc.of_allocsite allocsite) in
+    let mem = update mode spec global (eval_lv ~spec pid lv mem) arr_val mem in
+    let mem = update mode spec global ext_loc Val.itv_top mem in
+    (mem,global)
+
+let model_realloc mode spec node (lvo, exps) (mem, global) =
+  let pid = Node.get_pid node in
+  match lvo with
+  | Some lv ->
+    begin
+      match exps with
+      | _::size::_ ->
+        (update mode spec global (eval_lv ~spec pid lv mem) (eval_array_alloc ~spec node size false mem) mem, global)
+      | _ -> raise (Failure "Error: arguments of realloc are not given")
+    end
+  | _ -> (mem,global)
+
+let model_calloc mode spec node (lvo, exps) (mem, global) =
+  let pid = Node.get_pid node in
+  match lvo with
+  | Some lv ->
+    begin
+      match exps with
+      | n::size::_ ->
+        let new_size = Sparrow_cil.BinOp (Sparrow_cil.Mult, n, size, Sparrow_cil.uintType) in
+        (update mode spec global (eval_lv ~spec pid lv mem) (eval_array_alloc ~spec node new_size false mem) mem, global)
+      | _ -> raise (Failure "Error: arguments of realloc are not given")
+    end
+  | _ -> (mem,global)
+
+let model_scanf mode spec pid exps (mem, global) =
+  match exps with
+    _::t ->
+      List.fold_left (fun (mem, global) e ->
+          match e with
+            Sparrow_cil.AddrOf lv ->
+              let mem = update mode spec global (eval_lv ~spec pid lv mem) Val.itv_top mem in
+              (mem, global)
+          | _ -> (mem,global)) (mem,global) t
+  | _ -> (mem, global)
+
+let model_strdup mode spec node (lvo, exps) (mem, global) =
+  let pid = Node.get_pid node in
+  match (lvo, exps) with
+  | (Some lv, str::_) ->
+    let allocsite = Allocsite.allocsite_of_node node in
+    let str_val = eval ~spec pid str mem |> ItvDom.Val.array_of_val in
+    let size = ArrayBlk.sizeof str_val in
+    let null_pos = ArrayBlk.nullof str_val in
+    let allocsites = ArrayBlk.pow_loc_of_array str_val in
+    let offset = Itv.zero in
+    let arr_val = ArrayBlk.make allocsite Itv.zero (Itv.minus size offset) Itv.one null_pos in
+    let loc = PowLoc.singleton (Loc.of_allocsite allocsite) in
+    let v = Val.join (Val.of_array arr_val) (Val.of_pow_loc loc) in
+    let mem = update mode spec global (eval_lv ~spec pid lv mem) v mem in
+    let mem = update mode spec global loc (lookup allocsites mem) mem in
+    (mem,global)
+  | _ -> (mem,global)
+
+let model_input mode spec pid lvo (mem, global) =
+  match lvo with
+    Some lv ->
+      let allocsite = Allocsite.allocsite_of_ext None in
+      let ext_v = Val.external_value allocsite in
+      let ext_loc = PowLoc.singleton (Loc.of_allocsite allocsite) in
+      let mem = update mode spec global (eval_lv ~spec pid lv mem) ext_v mem in
+      let mem = update mode spec global ext_loc Val.itv_top mem in
+        (mem,global)
+  | _ -> (mem,global)
+
+let model_assign mode spec pid (lvo,exps) (mem, global) =
+  match (lvo,exps) with
+    (Some lv, e::_) ->
+      (update mode spec global (eval_lv ~spec pid lv mem) (eval ~spec pid e mem) mem, global)
+  | (_, _) -> (mem,global)
+
+
+let model_strlen mode spec pid (lvo, exps) (mem, global) =
+  match (lvo, exps) with
+  | (Some lv, str::_) ->
+    let str_val = eval ~spec pid str mem in
+    let null_pos = ArrayBlk.nullof (ItvDom.Val.array_of_val str_val) in
+    let v = Val.of_itv (Itv.meet Itv.nat null_pos) in
+    (update mode spec global (eval_lv ~spec pid lv mem) v mem, global)
+  | _ -> (mem,global)
+
+let rec model_fgets mode spec pid (lvo, exps) (mem, global) =
+  match (lvo, exps) with
+  | (_, Lval buf::size::_) | (_, StartOf buf::size::_) ->
+    let size_itv = eval ~spec pid size mem |> ItvDom.Val.itv_of_val in
+    let buf_lv = eval_lv ~spec pid buf mem in
+    let buf_arr = lookup buf_lv mem |> ItvDom.Val.array_of_val in
+    let allocsites = ArrayBlk.pow_loc_of_array buf_arr in
+    let buf_val = ArrayBlk.set_null_pos buf_arr (Itv.join Itv.zero size_itv) |> ItvDom.Val.of_array in
+    mem
+    |> update mode spec global buf_lv buf_val
+    |> update mode spec global allocsites Val.itv_top
+    |> (fun mem -> (mem, global))
+  | (_, CastE (_, _, buf)::size::e) -> model_fgets mode spec pid (lvo, buf::size::e) (mem, global)
+  | _ -> (mem,global)
+
+let rec model_sprintf mode spec pid (lvo, exps) (mem, global) =
+  match exps with
+  | Lval buf::str::[] | StartOf buf::str::[] ->  (* format string *)
+    let str_val = eval ~spec pid str mem |> ItvDom.Val.array_of_val in
+    let (arrays, null_pos) = (ArrayBlk.pow_loc_of_array str_val, ArrayBlk.nullof str_val) in
+    let buf_lv = eval_lv ~spec pid buf mem in
+    let buf_arr = lookup buf_lv mem |> ItvDom.Val.array_of_val in
+    let allocsites = ArrayBlk.pow_loc_of_array buf_arr in
+    let buf_val = ArrayBlk.set_null_pos buf_arr null_pos |> ItvDom.Val.of_array in
+    mem
+    |> update mode spec global buf_lv buf_val
+    |> update mode spec global allocsites (lookup arrays mem)
+    |> (match lvo with Some lv -> update mode spec global (eval_lv ~spec pid lv mem) (Val.of_itv null_pos) | _ -> id)
+    |> (fun mem -> (mem, global))
+  | CastE (_, _, buf)::str::[]
+  | buf::CastE (_, _, str)::[] -> model_sprintf mode spec pid (lvo, buf::str::[]) (mem, global)
+  | _ ->
+    begin
+      match lvo with
+        Some lv -> (update mode spec global (eval_lv ~spec pid lv mem) (Val.of_itv Itv.nat) mem, global)
+      | _ -> (mem,global)
+    end
+
+(* argc, argv *)
+let sparrow_arg mode spec pid exps (mem,global) =
+  match exps with
+    (Sparrow_cil.Lval argc)::(Sparrow_cil.Lval argv)::_ ->
+      let argv_a = Allocsite.allocsite_of_ext (Some "argv") in
+      let argv_v = Val.of_array (ArrayBlk.input argv_a) in
+      let arg_a = Allocsite.allocsite_of_ext (Some "arg") in
+      let arg_v = Val.of_array (ArrayBlk.input arg_a) in
+      (update mode spec global (eval_lv ~spec pid argc mem) (Val.of_itv Itv.pos) mem
+      |> update mode spec global (eval_lv ~spec pid argv mem) argv_v
+      |> update mode spec global (PowLoc.singleton (Loc.of_allocsite argv_a)) arg_v
+      |> update mode spec global (PowLoc.singleton (Loc.of_allocsite arg_a)) (Val.of_itv Itv.top), global)
+  | _ -> (mem,global)
+
+(* optind, optarg *)
+let sparrow_opt mode spec pid exps (mem,global) =
+  match exps with
+    (Sparrow_cil.Lval optind)::(Sparrow_cil.Lval optarg)::_ ->
+      let arg_a = Allocsite.allocsite_of_ext (Some "arg") in
+      let arg_v = Val.of_array (ArrayBlk.input arg_a) in
+      (update mode spec global (eval_lv ~spec pid optind mem) (Val.of_itv Itv.nat) mem
+      |> update mode spec global (eval_lv ~spec pid optarg mem) arg_v
+      |> update mode spec global (PowLoc.singleton (Loc.of_allocsite arg_a)) (Val.of_itv Itv.top), global)
+  | _ -> (mem,global)
+
+let model_unknown mode spec node pid lvo f exps (mem, global) =
+  match lvo with
+    None -> (mem, global)
+  | Some lv when Sparrow_cil.isArithmeticType (Sparrow_cil.unrollTypeDeep (Sparrow_cil.typeOfLval lv)) ->
+      let ext_v = if CilHelper.is_unsigned (Sparrow_cil.unrollTypeDeep (Sparrow_cil.typeOfLval lv)) then
+                    Val.of_itv Itv.nat
+                  else Val.of_itv Itv.top
+      in
+      let mem = update mode spec global (eval_lv ~spec pid lv mem) ext_v mem in
+      (mem,global)
+  | Some lv ->
+      let allocsite = Allocsite.allocsite_of_ext (Some f.vname) in
+      let ext_v = ArrayBlk.extern allocsite |> ArrayBlk.cast_array (Sparrow_cil.typeOfLval lv) |> Val.of_array in
+      let ext_loc = PowLoc.singleton (Loc.of_allocsite allocsite) in
+      let mem = update mode spec global (eval_lv ~spec pid lv mem) ext_v mem in
+      let mem = update mode spec global ext_loc Val.itv_top mem in
+      (mem,global)
+
+let model_memcpy mode spec pid (lvo, exps) (mem, global) =
+  match (lvo, exps) with
+    Some lv, dst::src::_ ->
+      let (src_v, dst_v) = tuple mem |> Tuple2.map (eval ~spec pid src) (eval ~spec pid dst) in
+      let (src_l, dst_l) = (src_v, dst_v) |> Tuple2.mapn Val.array_of_val
+                           |> Tuple2.mapn ArrayBlk.pow_loc_of_array
+      in
+      mem
+      |> update mode spec global dst_l (lookup src_l mem)
+      |> update mode spec global (eval_lv ~spec pid lv mem) dst_v
+      |> (fun mem -> (mem, global))
+  | _, _ -> (mem, global)
+
+let model_getpwent mode spec node pid lvo f (mem,global) =
+  match lvo, f.vtype with
+    Some lv, Sparrow_cil.TFun ((Sparrow_cil.TPtr ((Sparrow_cil.TComp (comp, _) as elem_t), _) as ptr_t), _, _, _) ->
+      let struct_loc = eval_lv ~spec pid lv mem in
+      let struct_v = eval_array_alloc ~spec node (Sparrow_cil.SizeOf elem_t) false mem |> Val.cast ptr_t (Sparrow_cil.typeOfLval lv) in
+      let field_loc = ArrayBlk.append_field (Val.array_of_val struct_v) (List.find (fun f -> f.fname ="pw_name") comp.cfields) in
+      let allocsite = Allocsite.allocsite_of_ext (Some "getpwent.pw_name") in
+      let ext_v = ArrayBlk.input allocsite |> Val.of_array in
+      let ext_loc = PowLoc.singleton (Loc.of_allocsite allocsite) in
+      let mem = update mode spec global struct_loc struct_v mem
+              |> update mode spec global field_loc ext_v
+              |> update mode spec global ext_loc Val.itv_top in
+      (mem, global)
+  | _ -> (mem, global)
+
+let rec model_strcpy mode spec node pid es (mem, global) =
+  match es with
+    (CastE (_, _, e))::t -> model_strcpy mode spec node pid (e::t) (mem,global)
+  | dst::(CastE(_, _, e))::[] -> model_strcpy mode spec node pid (dst::e::[]) (mem,global)
+  | (Lval dst)::(Lval src)::[] | (StartOf dst)::(StartOf src)::[]
+  | (Lval dst)::(StartOf src)::[] | (StartOf dst)::(Lval src)::[] ->
+      let src_arr = Val.array_of_val (lookup (eval_lv ~spec pid src mem) mem) in
+      let dst_arr = Val.array_of_val (lookup (eval_lv ~spec pid dst mem) mem) in
+      let np = ArrayBlk.nullof src_arr in
+      let newv = Val.of_array (ArrayBlk.set_null_pos dst_arr np) in
+      let mem = mem |> update mode spec global (eval_lv ~spec pid dst mem) newv in
+      (mem, global)
+  | _ -> (mem, global)
+
+let rec model_strncpy mode spec node pid es (mem, global) =
+  match es with
+    CastE (_, _, e)::t -> model_strncpy mode spec node pid (e::t) (mem, global)
+  | (Lval dst)::_::size::_
+  | (StartOf dst)::_::size::_ ->
+      let arr = Val.array_of_val (lookup (eval_lv ~spec pid dst mem) mem) in
+      let sz = Val.itv_of_val (eval ~spec pid size mem) in
+      let np = Itv.join Itv.zero (Itv.minus sz Itv.one)in
+      let newv = Val.of_array (ArrayBlk.set_null_pos arr np) in
+      let mem = mem |> update mode spec global (eval_lv ~spec pid dst mem) newv in
+      (mem, global)
+  | _ -> (mem,global)
+
+
+let rec model_strcat mode spec node pid es (mem, global) =
+  match es with
+    (CastE (_, _, e))::t -> model_strcat mode spec node pid (e::t) (mem,global)
+  | dst::(CastE(_, _, e))::[] -> model_strcat mode spec node pid (dst::e::[]) (mem,global)
+  | (Lval dst)::(Lval src)::[] | (StartOf dst)::(StartOf src)::[]
+  | (Lval dst)::(StartOf src)::[] | (StartOf dst)::(Lval src)::[] ->
+      let src_arr = Val.array_of_val (lookup (eval_lv ~spec pid src mem) mem) in
+      let dst_arr = Val.array_of_val (lookup (eval_lv ~spec pid dst mem) mem) in
+      let np = ArrayBlk.nullof src_arr in
+      let newv = Val.of_array (ArrayBlk.plus_null_pos dst_arr np) in
+      let mem = mem |> update mode spec global (eval_lv ~spec pid dst mem) newv in
+      (mem, global)
+  | _ -> (mem, global)
+
+let rec model_strchr mode spec node pid (lvo, exps) (mem, global) =
+  match lvo, exps with
+    Some _, (CastE (_, _, e))::t -> model_strchr mode spec node pid (lvo, e::t) (mem,global)
+  | Some lv, (Lval str)::_ | Some lv, (StartOf str)::_ ->
+      let str_arr = Val.array_of_val (lookup (eval_lv ~spec pid str mem) mem) in
+      let np = ArrayBlk.nullof str_arr in
+      let newv = Val.of_array (ArrayBlk.plus_offset str_arr np) in
+      let mem = mem |> update mode spec global (eval_lv ~spec pid lv mem) newv in
+      (mem, global)
+  | _, _ -> (mem, global)
+
+let sparrow_array_init mode spec node pid exps (mem, global) =
+  match List.nth exps 0, List.nth exps 1 with
+  | arr, Sparrow_cil.Const (Sparrow_cil.CInt (_, _, _)) ->
+      let lv = eval ~spec pid arr mem |> Val.array_of_val |> ArrayBlk.pow_loc_of_array in
+      let v = List.fold_left (fun v e -> Val.join (eval ~spec pid e mem) v) Val.bot (List.tl exps) in
+      (update mode spec global lv v mem, global)
+  | arr, Sparrow_cil.Const (Sparrow_cil.CStr (s, _)) ->
+      let lv = eval ~spec pid arr mem |> Val.array_of_val |> ArrayBlk.pow_loc_of_array in
+      let v = List.fold_left (fun v e ->
+          match e with
+            Sparrow_cil.Const (Sparrow_cil.CStr (s, _)) ->
+              Val.join (eval_string_alloc node s mem) v
+          | _ -> v) Val.bot (List.tl exps)
+      in
+      (update mode spec global lv v mem, global)
+  | _, _ -> (mem, global)
+
+let mem_alloc_libs = ["__ctype_b_loc"; "initscr"; "newwin"; "localtime"; "getpwnam";
+  "__errno_location"; "opendir"; "readdir"; "fopen"; "fdopen"; "localtime"]
+
+let eval_src src_typ pid mem arg_e =
+  match src_typ with
+  | ApiSem.Value -> eval pid arg_e mem
+  | ApiSem.Array ->
+    let ploc = eval pid arg_e mem |> Val.all_loc_of_val in
+    lookup ploc mem
+
+let rec collect_src_vals arg_exps arg_typs pid mem =
+  match arg_exps, arg_typs with
+  | [], _ | _, [] -> []
+  | _, (ApiSem.Src (ApiSem.Variable, src_typ, _) :: []) ->
+    List.map (eval_src src_typ pid mem) arg_exps
+  | _, (ApiSem.Src (ApiSem.Variable, src_typ, _) :: _) ->
+    failwith "itvSem.ml : API encoding error (Varg not at the last position)"
+  | (arg_e :: arg_exps_left), (ApiSem.Src (ApiSem.Fixed, src_typ, _) :: arg_typs_left) ->
+    let src_v = eval_src src_typ pid mem arg_e in
+    src_v :: (collect_src_vals arg_exps_left arg_typs_left pid mem)
+  | (_ :: arg_exps_left), (_ :: arg_typs_left) ->
+    collect_src_vals arg_exps_left arg_typs_left pid mem
+
+let rec collect_dst_vals arg_exps arg_typs pid mem =
+  match arg_exps, arg_typs with
+  | [], _ | _, [] -> []
+  | _, (ApiSem.Dst (ApiSem.Variable, _) :: []) ->
+    List.map (fun e -> eval pid e mem) arg_exps
+  | _, (ApiSem.Dst (ApiSem.Variable, _) :: _) ->
+    failwith "itvSem.ml : API encoding error (Varg not at the last position)"
+  | (arg_e :: arg_exps_left), (ApiSem.Dst (ApiSem.Fixed, _) :: arg_typs_left) ->
+    let dst_v = eval pid arg_e mem in
+    dst_v :: (collect_dst_vals arg_exps_left arg_typs_left pid mem)
+  | (_ :: arg_exps_left), (_ :: arg_typs_left) ->
+    collect_dst_vals arg_exps_left arg_typs_left pid mem
+
+let rec collect_buf_vals arg_exps arg_typs pid mem =
+  match arg_exps, arg_typs with
+  | [], _ | _, [] -> []
+  | _, (ApiSem.Buf (ApiSem.Variable, _) :: []) ->
+    List.map (fun e -> eval pid e mem) arg_exps
+  | _, (ApiSem.Buf (ApiSem.Variable, _) :: _) ->
+    failwith "itvSem.ml : API encoding error (Varg not at the last position)"
+  | (arg_e :: arg_exps_left), (ApiSem.Buf (ApiSem.Fixed, _) :: arg_typs_left) ->
+    let buf_v = eval pid arg_e mem in
+    buf_v :: (collect_buf_vals arg_exps_left arg_typs_left pid mem)
+  | (_ :: arg_exps_left), (_ :: arg_typs_left) ->
+    collect_buf_vals arg_exps_left arg_typs_left pid mem
+
+let rec collect_size_vals arg_exps arg_typs node mem =
+  match arg_exps, arg_typs with
+  | [], _ | _, [] -> []
+  | (arg_e :: arg_exps_left), (ApiSem.Size :: arg_typs_left) ->
+    let size_v = eval node arg_e mem in
+    size_v :: (collect_size_vals arg_exps_left arg_typs_left node mem)
+  | (_ :: arg_exps_left), (_ :: arg_typs_left) ->
+    collect_size_vals arg_exps_left arg_typs_left node mem
+
+let process_dst mode spec pid src_vals global mem dst_e =
+  let src_v = List.fold_left Val.join Val.bot src_vals in
+  let dst_loc = Val.all_loc_of_val (eval pid dst_e mem) in
+  update mode spec global dst_loc src_v mem
+
+let process_buf mode spec node global mem dst_e =
+  let pid = Node.get_pid node in
+  let buf_loc = Val.all_loc_of_val (eval pid dst_e mem) in
+  let allocsite = Allocsite.allocsite_of_node node in
+  let input_v = Val.external_value allocsite in
+  update mode spec global buf_loc input_v mem
+
+let process_struct_ptr mode spec node global mem ptr_e =
+  let pid = Node.get_pid node in
+  let struct_loc = Val.all_loc_of_val (eval pid ptr_e mem) in
+  let allocsite = Allocsite.allocsite_of_node node in
+  let ext_v = Val.external_value allocsite in
+  let ext_loc = Val.all_loc_of_val ext_v in
+  let mem = update mode spec global struct_loc ext_v mem in
+  let mem = update mode spec global ext_loc ext_v mem in
+  (mem, global)
+
+let rec process_args mode spec node arg_exps arg_typs src_vals (mem, global) =
+  let va_src_flag =
+    List.exists (function | ApiSem.Src (ApiSem.Variable, _, _) -> true | _ -> false) arg_typs
+  in
+  let pid = Node.get_pid node in
+  match arg_exps, arg_typs with
+  | [], _ | _ , [] -> mem
+  | _, (ApiSem.Dst (ApiSem.Variable, _) :: []) ->
+    let _ = assert (va_src_flag || List.length src_vals > 0) in
+    List.fold_left (process_dst mode spec pid src_vals global) mem arg_exps
+  | _, (ApiSem.Dst (ApiSem.Variable, _) :: _) ->
+    failwith "API encoding error (Varg not at the last position)"
+  | (arg_e :: arg_exps_left), (ApiSem.Dst (ApiSem.Fixed, _) :: arg_typs_left) ->
+    let _ = assert (va_src_flag || List.length src_vals > 0) in
+    let mem = process_dst mode spec pid src_vals global mem arg_e in
+    process_args mode spec node arg_exps_left arg_typs_left src_vals (mem, global)
+  | _, (ApiSem.Buf (ApiSem.Variable, _) :: []) ->
+    List.fold_left (process_buf mode spec node global) mem arg_exps
+  | _, (ApiSem.Buf (ApiSem.Variable, _) :: _) ->
+    failwith "API encoding error (Varg not at the last position)"
+  | (arg_e :: arg_exps_left), (ApiSem.Buf (ApiSem.Fixed, _) :: arg_typs_left) ->
+    let mem = process_buf mode spec node global mem arg_e in
+    process_args mode spec node arg_exps_left arg_typs_left src_vals (mem, global)
+  | (arg_e :: arg_exps_left), (ApiSem.StructPtr :: arg_typs_left) ->
+    let (mem, global) = process_struct_ptr mode spec node global mem arg_e in
+    process_args mode spec node arg_exps_left arg_typs_left src_vals (mem, global)
+  | (_ :: arg_exps_left), (ApiSem.Src _ :: arg_typs_left)
+  | (_ :: arg_exps_left), (ApiSem.Size :: arg_typs_left)
+  | (_ :: arg_exps_left), (ApiSem.Skip :: arg_typs_left) ->
+    process_args mode spec node arg_exps_left arg_typs_left src_vals (mem, global)
+
+let gen_block mode spec node init_v (mem, global) =
+  let allocsite = Allocsite.allocsite_of_node node in
+  let offset = Itv.of_int 0 in
+  let sz = Itv.top in
+  let st = Itv.of_int 1 in
+  let np = Itv.nat in
+  let array = ArrayBlk.make allocsite offset sz st np in
+  let block_v = Val.of_array array in
+  let pow_loc = PowLoc.singleton (Loc.of_allocsite allocsite) in
+  (update mode spec global pow_loc init_v mem, block_v)
+
+let produce_ret mode spec node ret_typ va_src_flag
+      src_vals dst_vals buf_vals size_vals (mem, global) =
+  match ret_typ with
+  | ApiSem.Const -> (mem, Val.itv_top)
+  | ApiSem.TaintInput -> (* User input value (top itv & taintness) *)
+    (mem, Val.itv_top)
+  | ApiSem.SrcArg -> (* Src argument returned *)
+    let _ = assert (List.length src_vals = 1) in
+    (mem, List.hd src_vals)
+  | ApiSem.SizeArg -> (* Integer between 0 ~ Size argument returned *)
+    let _ = assert (List.length size_vals = 1) in
+    (mem, List.hd size_vals)
+  | ApiSem.TopWithSrcTaint -> (* Top itv & taintness of Src argument returned *)
+    let _ = assert (va_src_flag || List.length src_vals > 0) in
+    (mem, Val.itv_top)
+  | ApiSem.DstArg -> (* Dst argument returned *)
+    let _ = assert (List.length dst_vals = 1) in
+    (mem, List.hd dst_vals)
+  | ApiSem.BufArg -> (* Buf argument returned *)
+    let _ = assert (List.length buf_vals = 1) in
+    (mem, List.hd buf_vals)
+  | ApiSem.AllocConst -> (* New block, filled with given abstract val. *)
+    gen_block mode spec node Val.itv_top (mem, global)
+  | ApiSem.AllocDst -> (* New block, filled with Src argument *)
+    let _ = assert (va_src_flag || List.length src_vals > 0) in
+    let src_v = List.fold_left Val.join Val.bot src_vals in
+    gen_block mode spec node src_v (mem, global)
+  | ApiSem.AllocBuf -> (* New block, filled with user input *)
+    gen_block mode spec node Val.itv_top (mem, global)
+  | ApiSem.AllocStruct -> (* Newly allocated struct *)
+    let allocsite = Allocsite.allocsite_of_node node in
+    let ext_v = Val.external_value allocsite in
+    gen_block mode spec node ext_v (mem, global)
+
+let handle_api mode spec node (lvo, exps) (mem, global) api_type =
+  let pid = Node.get_pid node in
+  let arg_typs = api_type.ApiSem.arg_typs in
+  let ret_typ = api_type.ApiSem.ret_typ in
+  let src_vals = collect_src_vals exps arg_typs pid mem in
+  let dst_vals = collect_dst_vals exps arg_typs pid mem in
+  let buf_vals = collect_buf_vals exps arg_typs pid mem in
+  let size_vals = collect_size_vals exps arg_typs pid mem in
+  let mem = process_args mode spec node exps arg_typs src_vals (mem, global) in
+  match lvo with
+  | Some lv ->
+    let va_src_flag =
+      List.exists (function | ApiSem.Src (ApiSem.Variable, _, _) -> true | _ -> false) arg_typs
+    in
+    let (mem, ret_v) =
+      produce_ret mode spec node ret_typ
+        va_src_flag src_vals dst_vals buf_vals size_vals (mem, global) in
+    update mode spec global (eval_lv ~spec pid lv mem) ret_v mem
+  | None -> mem
+
+let scaffolded_functions mode spec node pid (lvo,f,exps) (mem, global) =
+  if !Options.scaffold then
+    match f.vname with
+    | "fgets" -> model_fgets mode spec pid (lvo, exps) (mem, global)
+    | "sprintf" -> model_sprintf mode spec pid (lvo, exps) (mem, global)
+    | "scanf" -> model_scanf mode spec pid exps (mem, global)
+    | "getenv" -> model_input mode spec pid lvo (mem, global)
+    | "strdup" -> model_strdup mode spec node (lvo, exps) (mem, global)
+    | "gettext" -> model_assign mode spec pid (lvo, exps) (mem, global)
+    | "memcpy" -> model_memcpy mode spec pid (lvo, exps) (mem, global)
+    | "getpwent" -> model_getpwent mode spec node pid lvo f (mem,global)
+    | "strcpy" -> model_strcpy mode spec node pid exps (mem, global)
+    | "strncpy" -> model_strncpy mode spec node pid exps (mem, global)
+    | "strcat" -> model_strcat mode spec node pid exps (mem, global)
+    | "strchr" | "strrchr" -> model_strchr mode spec node pid (lvo, exps) (mem, global)
+    | s when List.mem s mem_alloc_libs -> model_alloc_one mode spec pid lvo f (mem, global)
+    | s when ApiSem.ApiMap.mem f.vname ApiSem.api_map ->
+      let api_type = ApiSem.ApiMap.find f.vname ApiSem.api_map in
+      (handle_api mode spec node (lvo, exps) (mem, global) api_type, global)
+    | _ -> model_unknown mode spec node pid lvo f exps (mem, global)
+  else
+    model_unknown mode spec node pid lvo f exps (mem, global)
+
+let handle_undefined_functions mode spec node pid (lvo,f,exps) (mem,global) loc =
+  match f.vname with
+  | "sparrow_arg" -> sparrow_arg mode spec pid exps (mem,global)
+  | "sparrow_opt" -> sparrow_opt mode spec pid exps (mem,global)
+  | "sparrow_print" -> sparrow_print spec pid exps mem loc; (mem,global)
+  | "sparrow_dump" -> sparrow_dump mem loc; (mem,global)
+  | "sparrow_assume" -> (prune mode spec global pid (List.hd exps) mem, global)
+  | "sparrow_array_init" -> sparrow_array_init mode spec node pid exps (mem, global)
+  | "strlen" -> model_strlen mode spec pid (lvo, exps) (mem, global)
+  | "realloc" -> model_realloc mode spec node (lvo, exps) (mem, global)
+  | "calloc" -> model_calloc mode spec node (lvo, exps) (mem, global)
+  | _ -> scaffolded_functions mode spec node pid (lvo, f, exps) (mem, global)
+
+let bind_lvar : update_mode -> Spec.t -> Global.t -> Loc.t -> Val.t -> Mem.t -> Mem.t
+= fun mode spec global lvar v mem ->
+  let l = PowLoc.singleton lvar in
+  update mode spec global l v mem
+
+let bind_arg_ids : update_mode -> Spec.t -> Global.t -> Val.t list -> Loc.t list -> Mem.t -> Mem.t
+= fun mode spec global vs arg_ids mem ->
+  list_fold2 (bind_lvar mode spec global) arg_ids vs mem
+
+(* Binds a list of values to a set of argument lists.  If |args_set|
+    > 1, the argument binding does weak update. *)
+let bind_arg_lvars_set : update_mode -> Spec.t -> Global.t -> (Loc.t list) BatSet.t -> Val.t list -> Mem.t -> Mem.t
+= fun mode spec global arg_ids_set vs mem ->
+  let is_same_length l = List.length l = List.length vs in
+  let arg_ids_set = BatSet.filter is_same_length arg_ids_set in
+  let mode = if BatSet.cardinal arg_ids_set > 1 then AbsSem.Weak else mode in
+  BatSet.fold (bind_arg_ids mode spec global vs) arg_ids_set mem
+
+(* Default update option is weak update. *)
+let run : update_mode -> Spec.t -> Node.t -> Mem.t * Global.t -> Mem.t * Global.t
+= fun mode spec node (mem, global) ->
+  let pid = Node.get_pid node in
+  match InterCfg.cmdof global.icfg node with
+  | IntraCfg.Cmd.Cset (l, e, loc) ->
+      (update mode spec global (eval_lv ~spec pid l mem) (eval ~spec pid e mem) mem, global)
+  | IntraCfg.Cmd.Cexternal (l, _) ->
+    (match Sparrow_cil.typeOfLval l with
+       Sparrow_cil.TInt (_, _) | Sparrow_cil.TFloat (_, _) ->
+         let ext_v = Val.of_itv Itv.top in
+         let mem = update mode spec global (eval_lv ~spec pid l mem) ext_v mem in
+         (mem,global)
+     | _ ->
+       let allocsite = Allocsite.allocsite_of_ext None in
+       let ext_v = Val.external_value allocsite in
+       let ext_loc = PowLoc.singleton (Loc.of_allocsite allocsite) in
+       let mem = update mode spec global (eval_lv ~spec pid l mem) ext_v mem in
+       let mem = update mode spec global ext_loc ext_v mem in
+        (mem,global))
+  | IntraCfg.Cmd.Calloc (l, IntraCfg.Cmd.Array e, is_static, loc) ->
+    (update mode spec global (eval_lv ~spec pid l mem) (eval_array_alloc ~spec node e is_static mem) mem, global)
+  | IntraCfg.Cmd.Calloc (l, IntraCfg.Cmd.Struct s, is_static, loc) ->
+    let lv = eval_lv ~spec pid l mem in
+    (update mode spec global lv (eval_struct_alloc lv s) mem, global)
+  | IntraCfg.Cmd.Csalloc (l, s, loc) ->
+    let str_loc =
+      Allocsite.allocsite_of_string node
+      |> Loc.of_allocsite |> PowLoc.singleton
+    in
+    mem
+    |> update mode spec global (eval_lv ~spec pid l mem) (eval_string_alloc node s mem)
+    |> update mode spec global str_loc (eval_string s)
+    |> (fun mem -> (mem, global))
+  | IntraCfg.Cmd.Cfalloc (l, fd, _) ->
+    let clos = Val.of_pow_proc (PowProc.singleton fd.svar.vname) in
+    (update mode spec global (eval_lv ~spec pid l mem) clos mem, global)
+  | IntraCfg.Cmd.Cassume (e, _) ->
+    let _ = eval ~spec pid e mem in (* for inspection *)
+    (prune mode spec global pid e mem, global)
+  | IntraCfg.Cmd.Ccall (lvo, Sparrow_cil.Lval (Sparrow_cil.Var f, Sparrow_cil.NoOffset), arg_exps, loc)
+    when Global.is_undef f.vname global -> (* undefined library functions *)
+    if BatSet.mem ((CilHelper.s_location loc)^":"^f.vname) spec.Spec.unsound_lib then (mem,global)
+    else
+      let _ = eval_list spec pid arg_exps mem in (* for inspection *)
+      handle_undefined_functions mode spec node pid (lvo,f,arg_exps) (mem,global) loc
+  | IntraCfg.Cmd.Ccall (lvo, f, arg_exps, _) -> (* user functions *)
+    let fs = Val.pow_proc_of_val (eval ~spec pid f mem) in
+    if PowProc.eq fs PowProc.bot then (mem, global)
+    else
+      let arg_lvars_of_proc f acc =
+        let args = InterCfg.argsof global.icfg f in
+        let lvars = List.map (fun x -> Loc.of_lvar f x.Sparrow_cil.vname x.Sparrow_cil.vtype) args in
+        BatSet.add lvars acc in
+      let arg_lvars_set = PowProc.fold arg_lvars_of_proc fs BatSet.empty in
+      let arg_vals = eval_list spec pid arg_exps mem in
+      let dump =
+         match lvo with
+         | None -> global.dump
+         | Some lv ->
+           let retvars_of_proc f acc =
+             let ret = Loc.return_var f (Sparrow_cil.typeOfLval lv) in
+             PowLoc.add ret acc in
+           let retvar_set = PowProc.fold retvars_of_proc fs PowLoc.empty in
+           let _ = Mem.lookup retvar_set mem in
+           PowProc.fold (fun f d ->
+              Dump.weak_add f (eval_lv ~spec pid lv mem) d
+           ) fs global.dump in
+      let mem = bind_arg_lvars_set mode spec global arg_lvars_set arg_vals mem in
+      (mem, { global with dump })
+  | IntraCfg.Cmd.Creturn (ret_opt, _) ->
+      (match ret_opt with
+      | None -> mem
+      | Some e ->
+        update Weak spec global (Loc.return_var pid (Sparrow_cil.typeOf e) |> PowLoc.singleton) (eval ~spec pid e mem) mem)
+      |> (fun mem -> (mem, global))
+  | IntraCfg.Cmd.Cskip when InterCfg.is_returnnode node global.icfg ->
+    let callnode = InterCfg.callof node global.icfg in
+    (match InterCfg.cmdof global.icfg callnode with
+       IntraCfg.Cmd.Ccall (Some lv, f, _, _) ->
+        let callees = Val.pow_proc_of_val (eval ~spec pid f mem) in (* TODO: optimize this. memory access and du edges *)
+        let retvar_set = PowProc.fold (fun f ->
+          let ret = Loc.return_var f (Sparrow_cil.typeOfLval lv) in
+          PowLoc.add ret) callees PowLoc.empty in
+        update Weak spec global (eval_lv ~spec pid lv mem) (lookup retvar_set mem) mem
+     | _ -> mem)
+    |> (fun mem -> (mem, global))
+  | IntraCfg.Cmd.Cskip -> (mem, global)
+  | IntraCfg.Cmd.Casm _ -> (mem, global)    (* Not supported *)
+  | _ -> invalid_arg "itvSem.ml: run_cmd"
+
+let initial _ = Mem.bot

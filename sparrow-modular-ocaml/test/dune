@@ -2,7 +2,9 @@
  (names
   real_sparrow_frontend_dump
   real_sparrow_frontend_global_compare
-  real_sparrow_acceptance_audit)
+  real_sparrow_acceptance_audit
+  real_sparrow_preanalysis_dump
+  real_sparrow_preanalysis_compare)
  (modes byte)
  (libraries compiler-libs.toplevel sparrow_modular_ocaml metaocaml dynlink yojson unix)
  (flags :standard -w -27-32-33-39-50))
@@ -11,6 +13,9 @@
  (alias real_sparrow_frontend_global)
  (targets real_sparrow_frontend_global.source-lineage-check.json real_sparrow_frontend_global.audit.json)
  (deps
+  real_sparrow_frontend_dump.bc
+  real_sparrow_frontend_global_compare.bc
+  real_sparrow_acceptance_audit.bc
   fixtures/real_frontend/single_function.c
   fixtures/real_frontend/multi_function.c
   fixtures/real_frontend/globals.c
@@ -18,15 +23,48 @@
   fixtures/real_frontend/mod_a.c
   fixtures/real_frontend/mod_b.c
   ../doc/real-sparrow-lineage.md
+  ../doc/traceability.md
   ../doc/adr/ADR-0001-real-sparrow-frontend-global-fork.md
-  ../doc/experiments/real-sparrow-frontend-global.md)
+  ../doc/adr/ADR-0002-real-sparrow-preanalysis-pe.md
+  ../doc/experiments/real-sparrow-frontend-global.md
+  ../doc/experiments/real-sparrow-preanalysis.md
+  ../doc/experiments/real-sparrow-preanalysis-closure.md)
  (action
   (progn
+   (run rm -rf ../_build/real-sparrow/frontend-global/active ../_build/real-sparrow/frontend-global/source-lineage-reference)
    (run ./real_sparrow_frontend_dump.bc --module fixtures/real_frontend/single_function.c --module fixtures/real_frontend/multi_function.c --module fixtures/real_frontend/globals.c --module fixtures/real_frontend/unreachable_nodes.c --module fixtures/real_frontend/mod_a.c --module fixtures/real_frontend/mod_b.c --out ../_build/real-sparrow/frontend-global/active)
    (run ./real_sparrow_frontend_dump.bc --module fixtures/real_frontend/single_function.c --module fixtures/real_frontend/multi_function.c --module fixtures/real_frontend/globals.c --module fixtures/real_frontend/unreachable_nodes.c --module fixtures/real_frontend/mod_a.c --module fixtures/real_frontend/mod_b.c --out ../_build/real-sparrow/frontend-global/source-lineage-reference)
    (run ./real_sparrow_frontend_global_compare.bc --active ../_build/real-sparrow/frontend-global/active --reference ../_build/real-sparrow/frontend-global/source-lineage-reference --report real_sparrow_frontend_global.source-lineage-check.json)
-   (run ./real_sparrow_acceptance_audit.bc --repo-root .. --report real_sparrow_frontend_global.audit.json))))
+   (run bash -c "root=$(cd ../../.. && pwd); ./real_sparrow_acceptance_audit.bc --repo-root $root --report real_sparrow_frontend_global.audit.json"))))
+
+(rule
+ (alias real_sparrow_preanalysis)
+ (targets real_sparrow_preanalysis.source-lineage-check.json real_sparrow_preanalysis.audit.json)
+ (deps
+  real_sparrow_preanalysis_dump.bc
+  real_sparrow_preanalysis_compare.bc
+  real_sparrow_acceptance_audit.bc
+  fixtures/real_preanalysis/direct_call.c
+  fixtures/real_preanalysis/unreachable_function.c
+  fixtures/real_preanalysis/branch_pruning.c
+  fixtures/real_preanalysis/memory_update.c
+  fixtures/real_preanalysis/extern_dynamic.c
+  fixtures/real_preanalysis/extern_independent.c
+  ../doc/real-sparrow-lineage.md
+  ../doc/traceability.md
+  ../doc/adr/ADR-0001-real-sparrow-frontend-global-fork.md
+  ../doc/adr/ADR-0002-real-sparrow-preanalysis-pe.md
+  ../doc/experiments/real-sparrow-frontend-global.md
+  ../doc/experiments/real-sparrow-preanalysis.md
+  ../doc/experiments/real-sparrow-preanalysis-closure.md)
+ (action
+  (progn
+   (run bash -c "root=$(cd ../../.. && pwd); rm -rf $root/_build/real-sparrow/preanalysis/active $root/_build/real-sparrow/preanalysis/frozen")
+   (run bash -c "root=$(cd ../../.. && pwd); ./real_sparrow_preanalysis_dump.bc --module fixtures/real_preanalysis/direct_call.c --module fixtures/real_preanalysis/unreachable_function.c --module fixtures/real_preanalysis/branch_pruning.c --module fixtures/real_preanalysis/memory_update.c --module fixtures/real_preanalysis/extern_dynamic.c --module fixtures/real_preanalysis/extern_independent.c --out $root/_build/real-sparrow/preanalysis/active")
+   (run bash -c "root=$(cd ../../.. && pwd); cd $root/../sparrow && dune exec test/real_preanalysis_observer.exe -- --module $root/test/fixtures/real_preanalysis/direct_call.c --module $root/test/fixtures/real_preanalysis/unreachable_function.c --module $root/test/fixtures/real_preanalysis/branch_pruning.c --module $root/test/fixtures/real_preanalysis/memory_update.c --module $root/test/fixtures/real_preanalysis/extern_dynamic.c --module $root/test/fixtures/real_preanalysis/extern_independent.c --out $root/_build/real-sparrow/preanalysis/frozen")
+   (run bash -c "root=$(cd ../../.. && pwd); ./real_sparrow_preanalysis_compare.bc --active $root/_build/real-sparrow/preanalysis/active --reference $root/_build/real-sparrow/preanalysis/frozen --report real_sparrow_preanalysis.source-lineage-check.json")
+   (run bash -c "root=$(cd ../../.. && pwd); ./real_sparrow_acceptance_audit.bc --repo-root $root --report real_sparrow_preanalysis.audit.json"))))
 
 (alias
  (name runtest)
- (deps (alias real_sparrow_frontend_global)))
+ (deps (alias real_sparrow_frontend_global) (alias real_sparrow_preanalysis)))

@@ -51,8 +51,34 @@ semantics were edited.
   structural equivalence at the `Global.init` boundary when the observer command
   is rerun.
 
-## Out-of-scope statement
+## Frontend/global-only boundary record
 
-This milestone does not implement pre-analysis PE, DUG PE, interval analysis PE,
-executable MetaOCaml `D code`, residual linking, or the residual global fixpoint.
-Those are future milestones after this real frontend/global boundary is accepted.
+The original frontend/global milestone stopped at `Global.init`; it did not claim
+later analysis-boundary behavior. ADR-0002 supersedes that older boundary for the
+current PreAnalysis milestone, which now records module-only Weak
+`PreAnalysis.perform` evidence. Still out of scope: Strong staging, sparse/DUG
+parity, whole-program merge equivalence, executable MetaOCaml `D code`, residual
+linking, and the residual global fixpoint.
+
+## PreAnalysis PE lineage extension
+
+The PreAnalysis milestone extends the accepted path from:
+
+```ocaml
+parse_one_file -> make_cfg_info -> Global.init
+```
+
+to:
+
+```ocaml
+parse_one_file -> make_cfg_info -> Global.init -> PreAnalysis.perform
+```
+
+Source anchors:
+
+- `sparrow/src/core/preAnalysis.ml:19-23` — `onestep_transfer` applies `ItvSem.run AbsSem.Weak ItvSem.Spec.empty`.
+- `sparrow/src/core/preAnalysis.ml:25-33` — fixpoint over `Mem`/`Dump`.
+- `sparrow/src/core/preAnalysis.ml:35-64` — call edge and callgraph construction.
+- `sparrow/src/core/preAnalysis.ml:66-74` — write `global.mem`, draw edges/callgraph, remove unreachable functions.
+
+Non-claims: no Strong staging, no sparse/DUG parity, no whole-program merge equivalence, and no executable residual linker/global-fixpoint behavior.
