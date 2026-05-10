@@ -74,10 +74,18 @@ let () =
   let roundtrip_json = Yojson.Safe.from_file out in
   if dynamic_payloads original_json <> dynamic_payloads roundtrip_json then
     failwith "D-code payload changed during roundtrip";
-  let corrupt_path = out ^ ".corrupt" in
-  Cli.write_file corrupt_path (Yojson.Safe.pretty_to_string (corrupt_first_dynamic_source original_json));
-  expect_read_failure corrupt_path;
+  let artifact_payload json = match json with
+    | `Assoc fields -> List.assoc_opt "pipeline_artifacts" fields
+    | _ -> None
+  in
+  if artifact_payload original_json <> artifact_payload roundtrip_json then
+    failwith "pipeline artifacts changed during roundtrip";
+  if dyn <> [] then begin
+    let corrupt_path = out ^ ".corrupt" in
+    Cli.write_file corrupt_path (Yojson.Safe.pretty_to_string (corrupt_first_dynamic_source original_json));
+    expect_read_failure corrupt_path
+  end;
   let s2 = Summary.read out in
   if List.length (Summary.dynamic_cells s2) <> List.length dyn then failwith "D-code lost during roundtrip";
-  if execute then ignore (Cases.stage2 [s2; { Summary.module_name="b"; cells=[]; exports=["n", Product_value.of_int 3]; dependencies=[] }]);
+  if execute then ignore (Cases.stage2 [s2; { Summary.module_name="b"; cells=[]; exports=["n", Product_value.of_int 3]; dependencies=[]; pipeline_artifacts=None }]);
   print_endline "summary_roundtrip: PASS"

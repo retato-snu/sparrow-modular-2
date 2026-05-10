@@ -1,5 +1,8 @@
+(include_subdirs unqualified)
+
 (library
  (name sparrow_modular_ocaml)
  (public_name sparrow_modular_ocaml.lib)
- (libraries metaocaml yojson unix)
- (flags :standard -w -27-32-33))
+ (libraries metaocaml yojson unix batteries ocamlgraph goblint-cil goblint-cil.makecfg)
+ (modules_without_implementation absDom)
+ (flags :standard -w -27-32-33-39-50))

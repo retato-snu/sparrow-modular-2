@@ -1,11 +1,14 @@
 open Sparrow_modular_ocaml
-let json_of_results ?baseline_output relation results =
+
+let json_of_results ?baseline_output ~fixture relation results =
   `Assoc [
+    "fixture", `String fixture;
     "relation", `String relation;
     "baseline_output", (match baseline_output with
       | None -> `Null
       | Some path -> `Assoc ["path", `String path; "available", `Bool true]);
-    "results", `List (List.map (fun (k,v) -> `Assoc ["cell", `String k; "value", Product_value.to_yojson v]) results)
+    "cells", `List (List.map (fun (k,v) -> `Assoc ["cell", `String k; "value", Product_value.to_yojson v]) results);
+    "divergence_cause", (if relation = "equiv" then `Null else `String "staged result differs from finite baseline expectation")
   ]
 
 let require_existing_file flag path =
@@ -18,12 +21,14 @@ let () =
   let expect = Cli.arg_value "--expect-relation" argv "equiv" in
   let compare = Cli.arg_value "--compare" argv "" in
   let baseline_output = Cli.arg_value "--baseline-output" argv "" in
+  let fixture_arg = Cli.arg_value "--fixture" argv "" in
   require_existing_file "--baseline-output" baseline_output;
   let summaries = Cases.load_summaries dir in
-  let case = Cases.case_of_summaries summaries in
+  let case = if fixture_arg = "" then Cases.case_of_summaries summaries else Cases.case_of_string fixture_arg in
   let results = Cases.stage2 summaries in
   let relation = Cases.relation case results in
   let baseline_output = if baseline_output = "" then None else Some baseline_output in
-  if compare <> "" then Cli.write_file compare (Yojson.Safe.pretty_to_string (json_of_results ?baseline_output relation results));
+  let fixture = if fixture_arg = "" then Pipeline.fixture_name (Cases.pipeline_fixture case) else fixture_arg in
+  if compare <> "" then Cli.write_file compare (Yojson.Safe.pretty_to_string (json_of_results ?baseline_output ~fixture relation results));
   if relation <> expect then failwith ("relation " ^ relation ^ " != expected " ^ expect);
   print_endline ("stage2_linker: " ^ relation)

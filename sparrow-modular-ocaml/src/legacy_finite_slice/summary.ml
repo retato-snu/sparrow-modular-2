@@ -1,6 +1,12 @@
 type cell = { name : string; value : Residual.ps }
 type dependency = { symbol : string; provider : string option }
-type t = { module_name : string; cells : cell list; exports : (string * Product_value.t) list; dependencies : dependency list }
+type t = {
+  module_name : string;
+  cells : cell list;
+  exports : (string * Product_value.t) list;
+  dependencies : dependency list;
+  pipeline_artifacts : Yojson.Safe.t option;
+}
 
 let rec mkdir_p path =
   if path <> "" && path <> "." && not (Sys.file_exists path) then begin
@@ -40,7 +46,8 @@ let to_yojson s =
     "module", `String s.module_name;
     "cells", `List (List.map cell_to_json s.cells);
     "exports", `List (List.map export_to_json s.exports);
-    "dependencies", `List (List.map dep_to_json s.dependencies)
+    "dependencies", `List (List.map dep_to_json s.dependencies);
+    "pipeline_artifacts", (match s.pipeline_artifacts with None -> `Null | Some json -> json)
   ]
 
 let dynamic_of_json fields =
@@ -93,7 +100,8 @@ let of_yojson = function
       { module_name;
         cells = list cell_of_json (List.assoc "cells" fields);
         exports = list export_of_json (List.assoc "exports" fields);
-        dependencies = list dep_of_json (List.assoc "dependencies" fields) }
+        dependencies = list dep_of_json (List.assoc "dependencies" fields);
+        pipeline_artifacts = (match List.assoc_opt "pipeline_artifacts" fields with Some `Null | None -> None | Some json -> Some json) }
   | _ -> failwith "bad summary"
 
 let write dir s =
