@@ -1,0 +1,27 @@
+(executables
+ (names meta_smoke staged_interval_runner stage2_linker_runner residual_shape_audit summary_roundtrip product_state_audit)
+ (modes byte)
+ (libraries compiler-libs.toplevel sparrow_modular_ocaml metaocaml dynlink yojson unix)
+ (flags :standard -w -27-32-33))
+
+(rule
+ (alias runtest)
+ (deps
+  fixtures/two_module_extern_loop/a.c
+  fixtures/two_module_extern_loop/b.c
+  fixtures/two_module_extern_loop/combined.c
+  fixtures/dynamic_if_residual/a.c
+  fixtures/dynamic_if_residual/b.c
+  fixtures/dynamic_if_residual/combined.c)
+ (action
+  (progn
+   (run ./meta_smoke.bc)
+   (run ./staged_interval_runner.bc -- --case two_module_extern_loop --module-a fixtures/two_module_extern_loop/a.c --module-b fixtures/two_module_extern_loop/b.c --emit-summary ../_build/stage1/two_module_extern_loop)
+   (run ./stage2_linker_runner.bc -- --summaries ../_build/stage1/two_module_extern_loop --expect-relation equiv --compare ../_build/reports/two_module_extern_loop.parity.json)
+   (run ./residual_shape_audit.bc -- --summary ../_build/stage1/two_module_extern_loop/a.summary --expect-loop-d-code --forbid-flat-d)
+   (run ./product_state_audit.bc -- --summary ../_build/stage1/two_module_extern_loop/a.summary --expect-components itv,powloc,array,struct,powproc)
+   (run ./summary_roundtrip.bc -- --summary ../_build/stage1/two_module_extern_loop/a.summary --out ../_build/roundtrip/a.summary --expect-d-code loop --execute-sample)
+   (run ./staged_interval_runner.bc -- --case dynamic_if_residual --module-a fixtures/dynamic_if_residual/a.c --module-b fixtures/dynamic_if_residual/b.c --emit-summary ../_build/stage1/dynamic_if_residual)
+   (run ./stage2_linker_runner.bc -- --summaries ../_build/stage1/dynamic_if_residual --expect-relation equiv --compare ../_build/reports/dynamic_if_residual.parity.json)
+   (run ./residual_shape_audit.bc -- --summary ../_build/stage1/dynamic_if_residual/a.summary --expect-if-d-code --forbid-flat-d)
+   (run ./summary_roundtrip.bc -- --summary ../_build/stage1/dynamic_if_residual/a.summary --out ../_build/roundtrip/if.summary --expect-d-code if --execute-sample))))

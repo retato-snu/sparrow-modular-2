@@ -1,0 +1,13 @@
+(lang dune 3.0)
+(name sparrow_modular_ocaml)
+(generate_opam_files true)
+
+(package
+ (name sparrow_modular_ocaml)
+ (synopsis "MetaOCaml staged modular slice for Sparrow")
+ (description "First interval-domain slice for staged modular Sparrow analysis using executable MetaOCaml residuals.")
+ (depends
+  (ocaml (= 5.3.0))
+  (ocaml-variants (= 5.3.0+BER))
+  (dune (>= 3.0))
+  yojson))

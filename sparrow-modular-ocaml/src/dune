@@ -1,0 +1,5 @@
+(library
+ (name sparrow_modular_ocaml)
+ (public_name sparrow_modular_ocaml.lib)
+ (libraries metaocaml yojson unix)
+ (flags :standard -w -27-32-33))

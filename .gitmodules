@@ -1,0 +1,6 @@
+[submodule "cil"]
+	path = cil
+	url = git@github.com:retato-snu/cil.git
+[submodule "sparrow"]
+	path = sparrow
+	url = git@github.com:retato-snu/sparrow.git
