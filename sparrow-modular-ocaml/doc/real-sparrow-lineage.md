@@ -82,3 +82,27 @@ Source anchors:
 - `sparrow/src/core/preAnalysis.ml:66-74` — write `global.mem`, draw edges/callgraph, remove unreachable functions.
 
 Non-claims: no Strong staging, no sparse/DUG parity, no whole-program merge equivalence, and no executable residual linker/global-fixpoint behavior.
+
+## Access-DUG lineage extension
+
+The Access-DUG milestone extends the accepted path from:
+
+```ocaml
+parse_one_file -> make_cfg_info -> Global.init -> PreAnalysis.perform
+```
+
+to:
+
+```ocaml
+parse_one_file -> make_cfg_info -> Global.init -> PreAnalysis.perform -> AccessAnalysis.perform -> SsaDug.make
+```
+
+Source anchors:
+
+- `sparrow/src/sparse/accessSem.ml:25-33` — access instrumentation wrapper.
+- `sparrow/src/sparse/accessAnalysis.ml:36-131` — access summary construction and indexes.
+- `sparrow/src/sparse/dug.ml:55-173` — DUG graph and labels.
+- `sparrow/src/sparse/ssaDug.ml:176-352` — def/use preparation and intra/inter DUG construction.
+- `sparrow/src/instance/itvAnalysis.ml:319-336` — sparse-spec input derivation for interval sparse analysis.
+
+Non-claims: no Worklist order, no `SparseAnalysis.perform`, no Strong sparse fixpoint, no widening/narrowing/convergence, no PartialFlowSensitivity staging/ranking parity, no whole-program merge equivalence, and no executable residual linker/global-fixpoint behavior.

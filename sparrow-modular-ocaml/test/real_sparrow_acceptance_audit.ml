@@ -93,7 +93,7 @@ let stale_overclaim_needles =
 
 let forbidden_hits root =
   collect_files root
-  |> List.filter (fun path -> not (is_legacy path || is_real_input path || is_source_lineage_support path || Filename.basename path = "real_sparrow_acceptance_audit.ml"))
+  |> List.filter (fun path -> not (is_legacy path || is_real_input path || is_source_lineage_support path || (Filename.basename path = "real_sparrow_acceptance_audit.ml" || Filename.basename path = "real_sparrow_access_dug_audit.ml")))
   |> List.concat_map (fun path ->
     let data = read_file path in
     forbidden_needles
@@ -102,7 +102,7 @@ let forbidden_hits root =
 
 let stale_overclaim_hits root =
   collect_files root
-  |> List.filter (fun path -> not (is_legacy path || Filename.basename path = "real_sparrow_acceptance_audit.ml"))
+  |> List.filter (fun path -> not (is_legacy path || (Filename.basename path = "real_sparrow_acceptance_audit.ml" || Filename.basename path = "real_sparrow_access_dug_audit.ml")))
   |> List.concat_map (fun path ->
     let data = read_file path in
     stale_overclaim_needles
