@@ -35,7 +35,9 @@ let parse files =
   match List.map parse_one_file files with
   | [] -> failwith "no input modules"
   | [one] -> one
-  | hd :: tl -> C.Mergecil.merge (hd :: tl) "sparrow_merged"
+  | hd :: tl ->
+      C.Mergecil.ignore_merge_conflicts := true;
+      C.Mergecil.merge (hd :: tl) "sparrow_merged"
 
 let make_cfg_info file =
   C.Partial.calls_end_basic_blocks file;
@@ -49,6 +51,9 @@ let make_cfg_info file =
 
 let global_for_module path =
   path |> parse_one_file |> make_cfg_info |> Real_sparrow_global.init
+
+let global_for_files paths =
+  paths |> parse |> make_cfg_info |> Real_sparrow_global.init
 
 let artifact_for_module path =
   let global = global_for_module path in
