@@ -72,7 +72,9 @@ let lines data = String.split_on_char '\n' data
 
 let hits root needles =
   collect_files root
-  |> List.filter (fun path -> not (is_legacy path || is_fixture path || is_source_lineage_support path || Filename.basename path = "real_sparrow_access_dug_audit.ml"))
+  |> List.filter (fun path ->
+       let base = Filename.basename path in
+       not (is_legacy path || is_fixture path || is_source_lineage_support path || contains base "_audit.ml"))
   |> List.concat_map (fun path ->
        let data = read_file path in
        needles

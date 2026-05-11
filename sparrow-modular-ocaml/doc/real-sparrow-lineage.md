@@ -23,7 +23,7 @@ per-module frontend/global artifacts.
 | `src/itvDom.ml{,i}` | `sparrow/src/domain/itvDom.ml{,i}` | `Mem.bot`, `Table.bot` names required by `Global.t` | support-only extraction | Bottom markers only; not interval-analysis implementation. |
 | `src/real_sparrow_frontend.ml` | `sparrow/src/core/frontend.ml` | `parseOneFile` lines ~35-43, `parse` lines ~45-55, `makeCFGinfo` lines ~57-67 | frontend wrapper over forked primitives | Per-module path is `parseOneFile -> makeCFGinfo -> Global.init`; merge remains reference-only. |
 | `src/real_sparrow_global.ml` | `sparrow/src/program/global.ml` | `Global.init` and `to_json` anchors above | observer wrapper | Calls extracted `Global.init` and emits lineage metadata. |
-| `src/real_sparrow_artifact.ml` | active artifact layer | n/a | observer/serialization support | Emits stable source-lineage structural self-checks; not part of Sparrow `I`. |
+| `src/real_sparrow_artifact.ml` | active artifact layer | n/a | observer/serialization support | Emits stable active-vs-frozen structural comparisons; not part of Sparrow `I`. |
 
 ## Boundary facts
 
@@ -47,9 +47,11 @@ semantics were edited.
 - Frozen executable observer parity now runs in the MetaOCaml-full switch via
   `sparrow/test/real_frontend_global_observer.ml`, a non-semantic test harness
   outside `sparrow/src`.
-- `_build/real-sparrow/frontend-global/frozen-parity.json` records active-vs-frozen
-  structural equivalence at the `Global.init` boundary when the observer command
-  is rerun.
+- `sparrow-modular-ocaml/_build/default/test/real_sparrow_frontend_global.source-lineage-check.json`
+  records active-vs-frozen structural equivalence at the `Global.init` boundary
+  when `dune build @real_sparrow_frontend_global` is rerun.  The alias writes
+  compared active and frozen module artifacts under
+  `_build/real-sparrow/frontend-global/{active,frozen}`.
 
 ## Frontend/global-only boundary record
 
@@ -106,3 +108,27 @@ Source anchors:
 - `sparrow/src/instance/itvAnalysis.ml:319-336` — sparse-spec input derivation for interval sparse analysis.
 
 Non-claims: no Worklist order, no `SparseAnalysis.perform`, no Strong sparse fixpoint, no widening/narrowing/convergence, no PartialFlowSensitivity staging/ranking parity, no whole-program merge equivalence, and no executable residual linker/global-fixpoint behavior.
+
+## Sparse fixpoint PE lineage extension
+
+The sparse-fixpoint PE milestone extends the accepted path from:
+
+```ocaml
+parse_one_file -> make_cfg_info -> Global.init -> PreAnalysis.perform -> AccessAnalysis.perform -> SsaDug.make
+```
+
+to:
+
+```ocaml
+parse_one_file -> make_cfg_info -> Global.init -> PreAnalysis.perform -> AccessAnalysis.perform -> SsaDug.make -> Worklist.init -> widening -> finalize -> narrowing
+```
+
+Source anchors:
+
+- `sparrow/src/sparse/worklist.ml:154-238` — workorder, loop heads, worklist set/order operations, and `Worklist.init`.
+- `sparrow/src/sparse/sparseAnalysis.ml:116-184` — widening/narrowing node transfer and worklist iteration.
+- `sparrow/src/sparse/sparseAnalysis.ml:232-260` — initialize/finalize and source phase order.
+- `sparrow/src/util/stepManager.ml:27-37` — phase wrapper compatibility; labels are not parity evidence.
+- `sparrow/src/instance/itvAnalysis.ml:319-342` — Itv sparse-spec derivation and call to sparse analysis.
+
+Non-claims: no Worklist-only product boundary, no standalone interval-analysis PE pipeline, no reusable interval-domain specializer, no octDom integration, no PartialFlowSensitivity staging/ranking parity, no whole-program merge equivalence, no executable residual linker, no residual global-fixpoint runtime, and no strict StepManager label parity requirement.

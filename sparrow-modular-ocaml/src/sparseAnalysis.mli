@@ -8,20 +8,25 @@
 (* See the LICENSE file for details.                                   *)
 (*                                                                     *)
 (***********************************************************************)
+(** Sparse analysis framework *)
 module type S =
 sig
-  include AbsSem.S
-  module Access : Access.S with type t = Dom.Access.t
-    and type Info.t = Dom.Access.Info.t
-  val accessof : ?locset: Dom.PowA.t -> Global.t -> BasicDom.Node.t
-    -> (BasicDom.Node.t -> Dom.t * Global.t -> Dom.t * Global.t) -> Dom.t
-    -> Access.info
+  module Dom : InstrumentedMem.S
+  module Table : MapDom.CPO with type t = MapDom.MakeCPO(BasicDom.Node)(Dom).t and type A.t = BasicDom.Node.t and type B.t = Dom.t
+  module Spec : Spec.S with type Dom.t = Dom.t and type Dom.A.t = Dom.A.t and type Dom.PowA.t = Dom.PowA.t
+  val perform : Spec.t -> Global.t -> Global.t * Table.t * Table.t
 end
 
-module Make (Sem : AbsSem.S) : S
+module Make (Sem:AbsSem.S) : S
   with type Dom.t = Sem.Dom.t
   and type Dom.A.t = Sem.Dom.A.t
   and type Dom.PowA.t = Sem.Dom.PowA.t
-  and type Dom.Access.t = Sem.Dom.Access.t
-  and type Dom.Access.Info.t = Sem.Dom.Access.Info.t
   and type Spec.t = Sem.Spec.t
+
+module MakeWithAccess (Sem:AccessSem.S) : S
+  with type Dom.t = Sem.Dom.t
+  and type Dom.A.t = Sem.Dom.A.t
+  and type Dom.PowA.t = Sem.Dom.PowA.t
+  and type Spec.t = Sem.Spec.t
+
+val completion_json : unit -> Yojson.Safe.t

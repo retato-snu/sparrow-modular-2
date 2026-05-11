@@ -36,8 +36,12 @@ mechanically adapting the active source-lineage fork where needed.
 A non-semantic observer was added under `sparrow/test/real_frontend_global_observer.ml`.
 It links frozen `sparrow_lib`, executes `Frontend.parse -> Frontend.makeCFGinfo ->
 Global.init` on each single module input, and writes JSON comparable with active
-artifacts.  The active-vs-frozen report is `_build/real-sparrow/frontend-global/frozen-parity.json`
-and has relation `structural-equiv` when regenerated.
+artifacts.  The `@real_sparrow_frontend_global` alias now regenerates active
+artifacts and frozen observer artifacts under
+`_build/real-sparrow/frontend-global/{active,frozen}` and writes the canonical
+comparison target
+`sparrow-modular-ocaml/_build/default/test/real_sparrow_frontend_global.source-lineage-check.json`.
+That report has relation `structural-equiv` when regenerated.
 
 ## Not implemented
 
