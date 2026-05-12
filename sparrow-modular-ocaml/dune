@@ -1,0 +1,7 @@
+(alias
+ (name abstract_speculate_metaocaml_sparse_pe)
+ (deps (alias test/abstract_speculate_metaocaml_sparse_pe)))
+
+(alias
+ (name abstract_speculate_pe_proof)
+ (deps (alias abstract_speculate_metaocaml_sparse_pe)))

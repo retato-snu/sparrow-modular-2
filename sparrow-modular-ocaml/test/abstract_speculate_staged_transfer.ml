@@ -1,0 +1,107 @@
+module T = Sparrow_modular_ocaml.Abstract_speculate_stage_types
+module MetaSparse = Sparrow_modular_ocaml.Abstract_speculate_meta_sparse
+
+let expect cond msg = if not cond then failwith msg
+
+let has_event needle components =
+  List.exists (fun c -> c.T.component_kind = "staged-abstract-cell" && c.T.transfer_event = needle) components
+
+let has_semantic_substring needle components =
+  List.exists (fun c ->
+    let json = T.component_to_yojson c |> Yojson.Safe.to_string in
+    String.contains json needle.[0] && String.length needle > 0 &&
+    let len = String.length json and sub = String.length needle in
+    let rec loop i = i + sub <= len && (String.sub json i sub = needle || loop (i + 1)) in
+    loop 0)
+    components
+
+let execution_entries result =
+  match result.MetaSparse.stage2_output.T.execution_log |> Yojson.Safe.Util.member "executed_residuals" with
+  | `List xs -> xs
+  | _ -> []
+
+let string_field name = function
+  | `Assoc fields -> (match List.assoc_opt name fields with Some (`String s) -> s | _ -> "")
+  | _ -> ""
+
+let bool_field name = function
+  | `Assoc fields -> (match List.assoc_opt name fields with Some (`Bool b) -> b | _ -> false)
+  | _ -> false
+
+let bool_equals name expected = function
+  | `Assoc fields -> List.assoc_opt name fields = Some (`Bool expected)
+  | _ -> false
+
+let int_field name = function
+  | `Assoc fields -> (match List.assoc_opt name fields with Some (`Int n) -> n | _ -> min_int)
+  | _ -> min_int
+
+let contains s sub =
+  let len = String.length s and sub_len = String.length sub in
+  let rec loop i = i + sub_len <= len && (String.sub s i sub_len = sub || loop (i + 1)) in
+  sub_len = 0 || loop 0
+
+let require_executed_semantic ~event ~semantic entries =
+  expect
+    (List.exists (fun entry ->
+       string_field "component_kind" entry = "staged-abstract-cell" &&
+       string_field "transfer_event" entry = event &&
+       contains (string_field "semantic_expression" entry) semantic &&
+       bool_field "typed_code_present" entry &&
+       bool_field "residual_arithmetic_executed" entry &&
+       bool_field "residual_guard_executed" entry &&
+       not (bool_field "row_wrapper" entry))
+       entries)
+    ("missing executed staged semantic transfer event: " ^ event ^ " / " ^ semantic)
+
+let require_value ~semantic ~value entries =
+  expect
+    (List.exists (fun entry ->
+       contains (string_field "semantic_expression" entry) semantic &&
+       int_field "residual_arithmetic_value" entry = value &&
+       bool_field "stage2_semantics_applied" (Yojson.Safe.Util.member "executed_component" entry))
+       entries)
+    ("residual arithmetic for " ^ semantic ^ " did not compute " ^ string_of_int value)
+
+let require_guard ~semantic ~value entries =
+  expect
+    (List.exists (fun entry ->
+       contains (string_field "semantic_expression" entry) semantic &&
+       bool_equals "residual_guard_value" value entry)
+       entries)
+    ("residual guard for " ^ semantic ^ " did not compute " ^ string_of_bool value)
+
+let () =
+  Sparrow_modular_ocaml.Sparrow_cil.initCIL ();
+  let call_result =
+    MetaSparse.run_stage1 "fixtures/abstract_speculate_pe/extern_dependent_call.c"
+  in
+  let components =
+    call_result.MetaSparse.analyzer.T.residual_input_components @
+    call_result.MetaSparse.analyzer.T.residual_output_components
+  in
+  expect (has_event "extern-call-result-created-D-during-transfer" components)
+    "production transfer must create D for unknown extern call result";
+  expect (has_event "dynamic-arithmetic-created-D-during-transfer" components)
+    "production transfer must create D for arithmetic depending on extern result";
+  let entries = execution_entries call_result in
+  require_executed_semantic
+    ~event:"extern-call-result-created-D-during-transfer"
+    ~semantic:"call result" entries;
+  require_executed_semantic
+    ~event:"dynamic-arithmetic-created-D-during-transfer"
+    ~semantic:"y := x+1" entries;
+  require_value ~semantic:"call result" ~value:41 entries;
+  require_value ~semantic:"x := tmp" ~value:41 entries;
+  require_value ~semantic:"y := x+1" ~value:42 entries;
+  expect (not (has_semantic_substring "ordinal" components))
+    "transfer residual semantics must not be ordinal-only witnesses";
+  let branch_result =
+    MetaSparse.run_stage1 "fixtures/abstract_speculate_metaocaml_sparse/dynamic_branch.c"
+  in
+  require_executed_semantic
+    ~event:"dynamic-guard-created-D-during-transfer"
+    ~semantic:"guard" (execution_entries branch_result);
+  require_guard ~semantic:"guard x>0" ~value:true (execution_entries branch_result);
+  require_guard ~semantic:"guard !(x>0)" ~value:false (execution_entries branch_result);
+  print_endline "abstract_speculate_staged_transfer: PASS"

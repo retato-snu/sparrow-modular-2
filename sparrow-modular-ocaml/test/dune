@@ -13,7 +13,18 @@
   real_sparrow_sparse_fixpoint_pe_audit
   real_sparrow_staged_linking_pe_dump
   real_sparrow_staged_linking_pe_compare
-  real_sparrow_staged_linking_pe_audit)
+  real_sparrow_staged_linking_pe_audit
+  abstract_speculate_pe_dump
+  abstract_speculate_pe_compare
+  abstract_speculate_pe_audit
+  abstract_speculate_metaocaml_sparse_online_residuals
+  abstract_speculate_metaocaml_sparse_forbidden_shortcuts
+  abstract_speculate_metaocaml_sparse_module_boundary
+  abstract_speculate_metaocaml_sparse_shape_witness
+  abstract_speculate_metaocaml_sparse_blind_equal
+  abstract_speculate_staged_transfer
+  abstract_speculate_staged_lattice
+  abstract_speculate_staged_bta_fixpoint)
  (modes byte)
  (libraries compiler-libs.toplevel sparrow_modular_ocaml metaocaml dynlink yojson unix)
  (flags :standard -w -27-32-33-39-50))
@@ -76,7 +87,7 @@
 
 (alias
  (name runtest)
- (deps (alias real_sparrow_frontend_global) (alias real_sparrow_preanalysis) (alias real_sparrow_access_dug) (alias real_sparrow_sparse_fixpoint_pe) (alias real_sparrow_staged_linking_pe)))
+ (deps (alias real_sparrow_frontend_global) (alias real_sparrow_preanalysis) (alias real_sparrow_access_dug) (alias real_sparrow_sparse_fixpoint_pe) (alias real_sparrow_staged_linking_pe) (alias abstract_speculate_metaocaml_sparse_pe)))
 
 
 (rule
@@ -167,3 +178,59 @@
    (run bash -c "root=$(cd ../../.. && pwd); mkdir -p $root/_build/real-sparrow; flock $root/_build/real-sparrow/frozen-observer.lock -c \"cd $root/../sparrow && dune exec test/real_staged_linking_observer.exe -- --group cross_file_direct_call:$root/test/fixtures/real_staged_linking/cross_file_direct_call/main.c,$root/test/fixtures/real_staged_linking/cross_file_direct_call/callee.c --group cross_file_global_update:$root/test/fixtures/real_staged_linking/cross_file_global_update/main.c,$root/test/fixtures/real_staged_linking/cross_file_global_update/state.c --group cross_file_branch_join:$root/test/fixtures/real_staged_linking/cross_file_branch_join/main.c,$root/test/fixtures/real_staged_linking/cross_file_branch_join/branch.c --group extern_boundary_linked:$root/test/fixtures/real_staged_linking/extern_boundary_linked/main.c,$root/test/fixtures/real_staged_linking/extern_boundary_linked/callee.c --group extern_independent_all_static:$root/test/fixtures/real_staged_linking/extern_independent_all_static/main.c,$root/test/fixtures/real_staged_linking/extern_independent_all_static/math.c --group linked_loop_widen_narrow:$root/test/fixtures/real_staged_linking/linked_loop_widen_narrow/main.c,$root/test/fixtures/real_staged_linking/linked_loop_widen_narrow/step.c --out $root/_build/real-sparrow/staged-linking-pe/frozen\"")
    (run bash -c "root=$(cd ../../.. && pwd); ./real_sparrow_staged_linking_pe_compare.bc --active $root/_build/real-sparrow/staged-linking-pe/active --reference $root/_build/real-sparrow/staged-linking-pe/frozen --report real_sparrow_staged_linking_pe.source-lineage-check.json --bta-report real_sparrow_staged_linking_pe.bta-report.json --residual-report real_sparrow_staged_linking_pe.residual-execution.json")
    (run bash -c "root=$(cd ../../.. && pwd); ./real_sparrow_staged_linking_pe_audit.bc --repo-root $root --report real_sparrow_staged_linking_pe.audit.json"))))
+
+(rule
+ (alias abstract_speculate_metaocaml_sparse_pe)
+ (targets
+  abstract_speculate_metaocaml_sparse.source-lineage-check.json
+  abstract_speculate_metaocaml_sparse.module-boundary-report.json
+  abstract_speculate_metaocaml_sparse.fact-provenance.json
+  abstract_speculate_metaocaml_sparse.bta-report.json
+  abstract_speculate_metaocaml_sparse.residual-inspection.json
+  abstract_speculate_metaocaml_sparse.forbidden-source-scan.json
+  abstract_speculate_metaocaml_sparse.audit.json)
+ (deps
+  abstract_speculate_pe_dump.bc
+  abstract_speculate_pe_compare.bc
+  abstract_speculate_pe_audit.bc
+  abstract_speculate_metaocaml_sparse_online_residuals.bc
+  abstract_speculate_metaocaml_sparse_forbidden_shortcuts.bc
+  abstract_speculate_metaocaml_sparse_module_boundary.bc
+  abstract_speculate_metaocaml_sparse_shape_witness.bc
+  abstract_speculate_metaocaml_sparse_blind_equal.bc
+  abstract_speculate_staged_transfer.bc
+  abstract_speculate_staged_lattice.bc
+  abstract_speculate_staged_bta_fixpoint.bc
+  fixtures/abstract_speculate_pe/all_static.c
+  fixtures/abstract_speculate_pe/direct_internal_call.c
+  fixtures/abstract_speculate_pe/widening_loop.c
+  fixtures/abstract_speculate_pe/branch_join.c
+  fixtures/abstract_speculate_pe/narrowing_enabled_loop.c
+  fixtures/abstract_speculate_pe/extern_dependent_call.c
+  fixtures/abstract_speculate_pe/extern_independent_static.c
+  fixtures/abstract_speculate_pe/local_global_memory.c
+  fixtures/abstract_speculate_pe/cross_file_unresolved_main.c
+  fixtures/abstract_speculate_metaocaml_sparse/dynamic_loop.c
+  fixtures/abstract_speculate_metaocaml_sparse/dynamic_branch.c
+  fixtures/abstract_speculate_metaocaml_sparse/module_local_main.c
+  fixtures/abstract_speculate_metaocaml_sparse/module_local_sibling.c
+  ../doc/adr/ADR-0006-abstract-speculate-metaocaml-sparse-proof-gate.md)
+ (action
+  (progn
+   (run bash -c "root=$(cd ../../.. && pwd); rm -rf $root/_build/real-sparrow/abstract-speculate-metaocaml-sparse/active $root/_build/real-sparrow/abstract-speculate-metaocaml-sparse/frozen")
+   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_pe_dump.bc --module fixtures/abstract_speculate_pe/all_static.c --module fixtures/abstract_speculate_pe/direct_internal_call.c --module fixtures/abstract_speculate_pe/widening_loop.c --module fixtures/abstract_speculate_pe/branch_join.c --module fixtures/abstract_speculate_pe/narrowing_enabled_loop.c --module fixtures/abstract_speculate_pe/extern_dependent_call.c --module fixtures/abstract_speculate_pe/extern_independent_static.c --module fixtures/abstract_speculate_pe/local_global_memory.c --module fixtures/abstract_speculate_pe/cross_file_unresolved_main.c --module fixtures/abstract_speculate_metaocaml_sparse/dynamic_loop.c --module fixtures/abstract_speculate_metaocaml_sparse/dynamic_branch.c --module fixtures/abstract_speculate_metaocaml_sparse/module_local_main.c --out $root/_build/real-sparrow/abstract-speculate-metaocaml-sparse/active")
+   (run bash -c "root=$(cd ../../.. && pwd); mkdir -p $root/_build/real-sparrow; flock $root/_build/real-sparrow/frozen-observer.lock -c \"cd $root/../sparrow && dune exec test/real_sparse_fixpoint_observer.exe -- --module $root/test/fixtures/abstract_speculate_pe/all_static.c --module $root/test/fixtures/abstract_speculate_pe/direct_internal_call.c --module $root/test/fixtures/abstract_speculate_pe/widening_loop.c --module $root/test/fixtures/abstract_speculate_pe/branch_join.c --module $root/test/fixtures/abstract_speculate_pe/narrowing_enabled_loop.c --module $root/test/fixtures/abstract_speculate_pe/extern_dependent_call.c --module $root/test/fixtures/abstract_speculate_pe/extern_independent_static.c --module $root/test/fixtures/abstract_speculate_pe/local_global_memory.c --module $root/test/fixtures/abstract_speculate_pe/cross_file_unresolved_main.c --module $root/test/fixtures/abstract_speculate_metaocaml_sparse/dynamic_loop.c --module $root/test/fixtures/abstract_speculate_metaocaml_sparse/dynamic_branch.c --module $root/test/fixtures/abstract_speculate_metaocaml_sparse/module_local_main.c --out $root/_build/real-sparrow/abstract-speculate-metaocaml-sparse/frozen\"")
+   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_pe_compare.bc --active $root/_build/real-sparrow/abstract-speculate-metaocaml-sparse/active --reference $root/_build/real-sparrow/abstract-speculate-metaocaml-sparse/frozen --source-lineage-report abstract_speculate_metaocaml_sparse.source-lineage-check.json --module-boundary-report abstract_speculate_metaocaml_sparse.module-boundary-report.json --fact-provenance-report abstract_speculate_metaocaml_sparse.fact-provenance.json --bta-report abstract_speculate_metaocaml_sparse.bta-report.json --residual-report abstract_speculate_metaocaml_sparse.residual-inspection.json --forbidden-source-report abstract_speculate_metaocaml_sparse.forbidden-source-scan.json")
+   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_metaocaml_sparse_online_residuals.bc --artifact-dir $root/_build/real-sparrow/abstract-speculate-metaocaml-sparse/active")
+   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_metaocaml_sparse_module_boundary.bc --artifact-dir $root/_build/real-sparrow/abstract-speculate-metaocaml-sparse/active")
+   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_metaocaml_sparse_shape_witness.bc --artifact-dir $root/_build/real-sparrow/abstract-speculate-metaocaml-sparse/active")
+   (run ./abstract_speculate_metaocaml_sparse_blind_equal.bc)
+   (run ./abstract_speculate_staged_transfer.bc)
+   (run ./abstract_speculate_staged_lattice.bc)
+   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_staged_bta_fixpoint.bc --artifact-dir $root/_build/real-sparrow/abstract-speculate-metaocaml-sparse/active")
+   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_metaocaml_sparse_forbidden_shortcuts.bc --repo-root $(cd ../../.. && pwd) --artifact-dir $root/_build/real-sparrow/abstract-speculate-metaocaml-sparse/active")
+   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_pe_audit.bc --repo-root $root --source-lineage-report abstract_speculate_metaocaml_sparse.source-lineage-check.json --module-boundary-report abstract_speculate_metaocaml_sparse.module-boundary-report.json --fact-provenance-report abstract_speculate_metaocaml_sparse.fact-provenance.json --bta-report abstract_speculate_metaocaml_sparse.bta-report.json --residual-report abstract_speculate_metaocaml_sparse.residual-inspection.json --forbidden-source-report abstract_speculate_metaocaml_sparse.forbidden-source-scan.json --report abstract_speculate_metaocaml_sparse.audit.json"))))
+
+(alias
+ (name abstract_speculate_pe_proof)
+ (deps (alias abstract_speculate_metaocaml_sparse_pe)))
