@@ -38,6 +38,50 @@ let string_field name = function
   | `Assoc fields -> (match List.assoc_opt name fields with Some (`String s) -> Some s | _ -> None)
   | _ -> None
 
+let assoc_field name = function
+  | `Assoc fields -> List.assoc_opt name fields
+  | _ -> None
+
+let sort_uniq_strings xs = List.sort_uniq String.compare xs
+
+let same_string_set left right =
+  sort_uniq_strings left = sort_uniq_strings right
+
+let string_list_field name json =
+  match assoc_field name json with
+  | Some (`List xs) ->
+      xs
+      |> List.fold_left (fun acc -> function
+           | `String s -> Option.map (fun ss -> s :: ss) acc
+           | _ -> None)
+           (Some [])
+      |> Option.map List.rev
+  | _ -> None
+
+let parse_effect = function
+  | (`Assoc _ as eff) ->
+      begin match string_field "node" eff, int_field "value" eff with
+      | Some node, Some _value -> Some node
+      | _ -> None
+      end
+  | _ -> None
+
+let effects_nodes = function
+  | `List effects ->
+      effects
+      |> List.fold_left (fun acc eff ->
+           match acc, parse_effect eff with
+           | Some nodes, Some node -> Some (node :: nodes)
+           | _ -> None)
+           (Some [])
+      |> Option.map List.rev
+  | _ -> None
+
+let structural_source_hash_matches ~source_hash (input : T.stage2_input) =
+  match string_field "source_hash" input.extern_effects with
+  | Some hash -> hash = source_hash
+  | None -> false
+
 let extern_int ~node ~location:_ (input : T.stage2_input) =
   match member "effects" input.extern_effects with
   | `List effects ->
@@ -52,9 +96,20 @@ let extern_int ~node ~location:_ (input : T.stage2_input) =
   | _ -> 0
 
 let validate_extern_effects ~source_hash ~extern_roots input =
-  let payload = Yojson.Safe.to_string input.T.extern_effects in
-  contains payload source_hash &&
-  List.for_all (fun root -> contains payload root) extern_roots
+  match input.T.extern_effects with
+  | (`Assoc _ as payload) ->
+      string_field "schema_version" payload = Some "abstract-speculate-extern-effects/v2" &&
+      structural_source_hash_matches ~source_hash input &&
+      begin match string_list_field "extern_roots" payload, assoc_field "effects" payload with
+      | Some roots, Some effects ->
+          same_string_set roots extern_roots &&
+          begin match effects_nodes effects with
+          | Some effect_nodes -> same_string_set effect_nodes extern_roots
+          | None -> false
+          end
+      | _ -> false
+      end
+  | _ -> false
 
 let overlay_rows static_rows residual_rows =
   List.sort (fun a b -> compare (Yojson.Safe.to_string a) (Yojson.Safe.to_string b))
@@ -125,7 +180,7 @@ let execute_staged_component
     ~residual_arithmetic_value
     ~residual_guard_value
     (input : T.stage2_input) =
-  if not (contains (Yojson.Safe.to_string input.extern_effects) source_hash) then
+  if not (structural_source_hash_matches ~source_hash input) then
     failwith "stage2 staged component source hash mismatch";
   let executed_component = executed_component default_component residual_arithmetic_value residual_guard_value in
   let row = executed_row ~location default_row executed_component in

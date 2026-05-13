@@ -97,6 +97,13 @@ let int_value = function Some (`Int n) -> n | _ -> 0
 let positive_int_field name json = match field name json with Some (`Int n) -> n > 0 | _ -> false
 let string_field name expected json = field name json = Some (`String expected)
 let list_field name json = match field name json with Some (`List xs) -> xs | _ -> []
+let set_field name value = function
+  | `Assoc fields -> `Assoc ((name, value) :: List.remove_assoc name fields)
+  | json -> json
+
+let remove_field name = function
+  | `Assoc fields -> `Assoc (List.remove_assoc name fields)
+  | json -> json
 
 let fixtures path =
   if not (Sys.file_exists path) then [] else
@@ -167,6 +174,44 @@ let residual_executable_ok entry =
   end
 
 let residual_report_ok path = all_fixtures path residual_executable_ok
+
+let first_good_residual_log path =
+  fixtures path
+  |> List.find_map (fun entry ->
+       match field "execution_log" entry with
+       | Some log when residual_log_ok log -> Some log
+       | _ -> None)
+
+let residual_audit_mutation_results path =
+  match first_good_residual_log path with
+  | None ->
+      [`Assoc [
+        "name", `String "known_good_residual_log_present";
+        "status", `String "fail";
+        "detail", `String "no passing residual execution_log found to mutation-test";
+      ]]
+  | Some log ->
+      [
+        "online_runcode_run=false", set_field "online_runcode_run" (`Bool false) log;
+        "runcode_run_performed=false", set_field "runcode_run_performed" (`Bool false) log;
+        "extern_effect_input_valid=false", set_field "extern_effect_input_valid" (`Bool false) log;
+        "executed_residual_count=0", set_field "executed_residual_count" (`Int 0) log;
+        "stage2_sparse_recompute=true", set_field "stage2_sparse_recompute" (`Bool true) log;
+        "executed_residuals missing", remove_field "executed_residuals" log;
+        "executed_residuals empty", set_field "executed_residuals" (`List []) log;
+        "json_metadata_only_proof=true", set_field "json_metadata_only_proof" (`Bool true) log;
+        "metadata_only_proof=true", set_field "metadata_only_proof" (`Bool true) log;
+        "top_substitution=true", set_field "top_substitution" (`Bool true) log;
+        "whole_row_dynamic_wrapper=true", set_field "whole_row_dynamic_wrapper" (`Bool true) log;
+        "linked_facts_prelink=true", set_field "linked_facts_prelink" (`Bool true) log;
+      ]
+      |> List.map (fun (name, mutated_log) ->
+           let rejected = not (residual_log_ok mutated_log) in
+           `Assoc [
+             "name", `String name;
+             "status", `String (if rejected then "pass" else "fail");
+             "detail", `String (if rejected then "tampered residual log rejected" else "tampered residual log accepted");
+           ])
 
 let bta_no_forbidden path =
   all_fixtures path (function
@@ -308,11 +353,13 @@ let () =
   let fact_ok = fact_provenance_ok !fact_provenance_report in
   let bta_ok = bta_no_forbidden !bta_report in
   let residual_ok = residual_report_ok !residual_report in
+  let residual_audit_mutation_results = residual_audit_mutation_results !residual_report in
+  let residual_audit_mutation_ok = List.for_all status_is_pass residual_audit_mutation_results in
   let forbidden_ok = forbidden_scan_ok !forbidden_source_report in
   let lineage_ok = source_lineage_ok !source_lineage_report in
   let forbidden_hits = hits root forbidden_claim_needles in
   let implementation_evidence, implementation_ok = implementation_evidence root in
-  let ok = semantic_clean && docs_present && reports_pass && boundary_ok && fact_ok && bta_ok && residual_ok && forbidden_ok && lineage_ok && implementation_ok && forbidden_hits = [] in
+  let ok = semantic_clean && docs_present && reports_pass && boundary_ok && fact_ok && bta_ok && residual_ok && residual_audit_mutation_ok && forbidden_ok && lineage_ok && implementation_ok && forbidden_hits = [] in
   let json = `Assoc [
     "schema_version", `String Sparrow_modular_ocaml.Abstract_speculate_pe.audit_schema_version;
     "status", `String (if ok then "pass" else "fail");
@@ -324,6 +371,8 @@ let () =
     "fact_provenance_module_local", `Bool fact_ok;
     "bta_forbidden_dynamic_fact_count_zero", `Bool bta_ok;
     "residual_metaocaml_runcode_verified", `Bool residual_ok;
+    "residual_audit_mutation_gates", `Bool residual_audit_mutation_ok;
+    "residual_audit_mutation_cases", `List residual_audit_mutation_results;
     "forbidden_source_scan_clean", `Bool forbidden_ok;
     "source_lineage_accepted_relation", `Bool lineage_ok;
     "implementation_evidence_ok", `Bool implementation_ok;
