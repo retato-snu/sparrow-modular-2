@@ -221,11 +221,10 @@ let residual_artifact_json ?residual_dir result =
     "execution_log", result.stage2_output.StageT.execution_log;
   ]
 
-let artifact_for_module ?residual_dir source =
-  let result = MetaSparse.run_stage1 source in
+let artifact_for_stage1_result ?residual_dir (result : MetaSparse.stage1_result) =
   `Assoc [
     "schema_version", `String schema_version;
-    "source", `String source;
+    "source", `String result.source;
     "module_id", `String result.MetaSparse.module_id;
     "source_hash", `String result.source_hash;
     "scope", `String "module-only-pre-link";
@@ -255,6 +254,9 @@ let artifact_for_module ?residual_dir source =
       `String "no baseline sparrow/src semantic edit";
     ];
   ]
+
+let artifact_for_module ?residual_dir source =
+  source |> MetaSparse.run_stage1 |> artifact_for_stage1_result ?residual_dir
 
 let forbidden_source_scan_for_artifact artifact =
   let residual = projection_member "residual_artifact" artifact in

@@ -1,5 +1,5 @@
 (***********************************************************************)
-(* Source-lineage staged linking PE wrapper for real Sparrow.           *)
+(* Source-lineage premerge linked observer wrapper for real Sparrow.           *)
 (***********************************************************************)
 
 module SparseItv = SparseAnalysis.Make (ItvSem)
@@ -13,10 +13,10 @@ module PowLoc = Access.PowLoc
 let boundary =
   "Frontend.parse/Mergecil.merge -> Global.init -> PreAnalysis.perform -> AccessAnalysis.perform -> SsaDug.make -> Worklist.init -> widening -> finalize -> narrowing -> executable residual recomposition"
 
-let schema_version = "real-sparrow-staged-linking-pe/v1"
-let bta_schema_version = "real-sparrow-staged-linking-pe-bta/v1"
-let residual_schema_version = "real-sparrow-staged-linking-pe-residual/v1"
-let audit_schema_version = "real-sparrow-staged-linking-pe-audit/v1"
+let schema_version = "real-sparrow-premerge-linked-observer/v1"
+let bta_schema_version = "real-sparrow-premerge-linked-observer-bta/v1"
+let residual_schema_version = "real-sparrow-premerge-linked-observer-residual/v1"
+let audit_schema_version = "real-sparrow-premerge-linked-observer-audit/v1"
 
 let sort_strings xs = List.sort_uniq String.compare xs
 let sort_json xs = List.sort (fun a b -> compare (Yojson.Safe.to_string a) (Yojson.Safe.to_string b)) xs
@@ -301,7 +301,7 @@ let extern_root_names global = bta_roots global |> List.map fst |> List.map node
 
 let extern_effect_fixture ~group_name ~extern_roots =
   `Assoc [
-    "schema_version", `String "real-sparrow-staged-linking-pe-extern-effects/v1";
+    "schema_version", `String "real-sparrow-premerge-linked-observer-extern-effects/v1";
     "group", `String group_name;
     "deterministic", `Bool true;
     "extern_roots", `List extern_roots;
@@ -333,7 +333,7 @@ let residual_source
     ~residual_entries =
   let json_string s = Yojson.Safe.to_string (`String s) in
   String.concat "\n" [
-    "(* Executable residual artifact for real Sparrow staged linking PE.\n   Static linked analysis facts are embedded as data below.\n   Runtime recomposes only the extern-dependent closure rows and entries;\n   forbidden frontend/global/fixpoint work is not invoked here. *)";
+    "(* Executable residual artifact for real Sparrow premerge linked observer.\n   Static linked analysis facts are embedded as data below.\n   Runtime recomposes only the extern-dependent closure rows and entries;\n   forbidden frontend/global/fixpoint work is not invoked here. *)";
     Printf.sprintf "let schema_version_json = %S" (json_string residual_schema_version);
     Printf.sprintf "let group_json = %S" (json_string group_name);
     Printf.sprintf "let group_name = %S" group_name;

@@ -11,9 +11,9 @@
   real_sparrow_sparse_fixpoint_pe_dump
   real_sparrow_sparse_fixpoint_pe_compare
   real_sparrow_sparse_fixpoint_pe_audit
-  real_sparrow_staged_linking_pe_dump
-  real_sparrow_staged_linking_pe_compare
-  real_sparrow_staged_linking_pe_audit
+  real_sparrow_premerge_linked_observer_dump
+  real_sparrow_premerge_linked_observer_compare
+  real_sparrow_premerge_linked_observer_audit
   abstract_speculate_pe_dump
   abstract_speculate_pe_compare
   abstract_speculate_pe_audit
@@ -22,6 +22,8 @@
   abstract_speculate_metaocaml_sparse_module_boundary
   abstract_speculate_metaocaml_sparse_shape_witness
   abstract_speculate_metaocaml_sparse_blind_equal
+  abstract_speculate_residual_linking_pe_dump
+  abstract_speculate_residual_linking_pe_check
   abstract_speculate_staged_transfer
   abstract_speculate_staged_lattice
   abstract_speculate_staged_bta_fixpoint)
@@ -87,7 +89,7 @@
 
 (alias
  (name runtest)
- (deps (alias real_sparrow_frontend_global) (alias real_sparrow_preanalysis) (alias real_sparrow_access_dug) (alias real_sparrow_sparse_fixpoint_pe) (alias real_sparrow_staged_linking_pe) (alias abstract_speculate_metaocaml_sparse_pe)))
+ (deps (alias real_sparrow_frontend_global) (alias real_sparrow_preanalysis) (alias real_sparrow_access_dug) (alias real_sparrow_sparse_fixpoint_pe) (alias real_sparrow_premerge_linked_observer) (alias abstract_speculate_metaocaml_sparse_pe)))
 
 
 (rule
@@ -145,39 +147,41 @@
    (run bash -c "root=$(cd ../../.. && pwd); ./real_sparrow_sparse_fixpoint_pe_audit.bc --repo-root $root --report real_sparrow_sparse_fixpoint_pe.audit.json"))))
 
 (rule
- (alias real_sparrow_staged_linking_pe)
+ (alias real_sparrow_premerge_linked_observer)
  (targets
-  real_sparrow_staged_linking_pe.source-lineage-check.json
-  real_sparrow_staged_linking_pe.bta-report.json
-  real_sparrow_staged_linking_pe.residual-execution.json
-  real_sparrow_staged_linking_pe.audit.json)
+  real_sparrow_premerge_linked_observer.source-lineage-check.json
+  real_sparrow_premerge_linked_observer.bta-report.json
+  real_sparrow_premerge_linked_observer.residual-execution.json
+  real_sparrow_premerge_linked_observer.audit.json)
  (deps
-  real_sparrow_staged_linking_pe_dump.bc
-  real_sparrow_staged_linking_pe_compare.bc
-  real_sparrow_staged_linking_pe_audit.bc
-  fixtures/real_staged_linking/cross_file_direct_call/main.c
-  fixtures/real_staged_linking/cross_file_direct_call/callee.c
-  fixtures/real_staged_linking/cross_file_global_update/main.c
-  fixtures/real_staged_linking/cross_file_global_update/state.c
-  fixtures/real_staged_linking/cross_file_branch_join/main.c
-  fixtures/real_staged_linking/cross_file_branch_join/branch.c
-  fixtures/real_staged_linking/extern_boundary_linked/main.c
-  fixtures/real_staged_linking/extern_boundary_linked/callee.c
-  fixtures/real_staged_linking/extern_independent_all_static/main.c
-  fixtures/real_staged_linking/extern_independent_all_static/math.c
-  fixtures/real_staged_linking/linked_loop_widen_narrow/main.c
-  fixtures/real_staged_linking/linked_loop_widen_narrow/step.c
+  real_sparrow_premerge_linked_observer_dump.bc
+  real_sparrow_premerge_linked_observer_compare.bc
+  real_sparrow_premerge_linked_observer_audit.bc
+  fixtures/real_premerge_linked_observer/cross_file_direct_call/main.c
+  fixtures/real_premerge_linked_observer/cross_file_direct_call/callee.c
+  fixtures/real_premerge_linked_observer/cross_file_global_update/main.c
+  fixtures/real_premerge_linked_observer/cross_file_global_update/state.c
+  fixtures/real_premerge_linked_observer/cross_file_branch_join/main.c
+  fixtures/real_premerge_linked_observer/cross_file_branch_join/branch.c
+  fixtures/real_premerge_linked_observer/extern_boundary_linked/main.c
+  fixtures/real_premerge_linked_observer/extern_boundary_linked/callee.c
+  fixtures/real_premerge_linked_observer/extern_independent_all_static/main.c
+  fixtures/real_premerge_linked_observer/extern_independent_all_static/math.c
+  fixtures/real_premerge_linked_observer/linked_loop_widen_narrow/main.c
+  fixtures/real_premerge_linked_observer/linked_loop_widen_narrow/step.c
   ../doc/real-sparrow-lineage.md
-  ../doc/adr/ADR-0005-real-sparrow-staged-linking-pe.md
-  ../doc/experiments/real-sparrow-staged-linking-pe.md
-  ../doc/experiments/real-sparrow-staged-linking-pe-closure.md)
+  ../doc/adr/ADR-0005-real-sparrow-premerge-linked-observer.md
+  ../doc/experiments/real-sparrow-premerge-linked-observer.md
+  ../doc/experiments/real-sparrow-premerge-linked-observer-closure.md)
  (action
   (progn
-   (run bash -c "root=$(cd ../../.. && pwd); rm -rf $root/_build/real-sparrow/staged-linking-pe/active $root/_build/real-sparrow/staged-linking-pe/frozen $root/_build/real-sparrow/staged-linking-pe/residual")
-   (run bash -c "root=$(cd ../../.. && pwd); ./real_sparrow_staged_linking_pe_dump.bc --group cross_file_direct_call:fixtures/real_staged_linking/cross_file_direct_call/main.c,fixtures/real_staged_linking/cross_file_direct_call/callee.c --group cross_file_global_update:fixtures/real_staged_linking/cross_file_global_update/main.c,fixtures/real_staged_linking/cross_file_global_update/state.c --group cross_file_branch_join:fixtures/real_staged_linking/cross_file_branch_join/main.c,fixtures/real_staged_linking/cross_file_branch_join/branch.c --group extern_boundary_linked:fixtures/real_staged_linking/extern_boundary_linked/main.c,fixtures/real_staged_linking/extern_boundary_linked/callee.c --group extern_independent_all_static:fixtures/real_staged_linking/extern_independent_all_static/main.c,fixtures/real_staged_linking/extern_independent_all_static/math.c --group linked_loop_widen_narrow:fixtures/real_staged_linking/linked_loop_widen_narrow/main.c,fixtures/real_staged_linking/linked_loop_widen_narrow/step.c --out $root/_build/real-sparrow/staged-linking-pe/active")
-   (run bash -c "root=$(cd ../../.. && pwd); mkdir -p $root/_build/real-sparrow; flock $root/_build/real-sparrow/frozen-observer.lock -c \"cd $root/../sparrow && dune exec test/real_staged_linking_observer.exe -- --group cross_file_direct_call:$root/test/fixtures/real_staged_linking/cross_file_direct_call/main.c,$root/test/fixtures/real_staged_linking/cross_file_direct_call/callee.c --group cross_file_global_update:$root/test/fixtures/real_staged_linking/cross_file_global_update/main.c,$root/test/fixtures/real_staged_linking/cross_file_global_update/state.c --group cross_file_branch_join:$root/test/fixtures/real_staged_linking/cross_file_branch_join/main.c,$root/test/fixtures/real_staged_linking/cross_file_branch_join/branch.c --group extern_boundary_linked:$root/test/fixtures/real_staged_linking/extern_boundary_linked/main.c,$root/test/fixtures/real_staged_linking/extern_boundary_linked/callee.c --group extern_independent_all_static:$root/test/fixtures/real_staged_linking/extern_independent_all_static/main.c,$root/test/fixtures/real_staged_linking/extern_independent_all_static/math.c --group linked_loop_widen_narrow:$root/test/fixtures/real_staged_linking/linked_loop_widen_narrow/main.c,$root/test/fixtures/real_staged_linking/linked_loop_widen_narrow/step.c --out $root/_build/real-sparrow/staged-linking-pe/frozen\"")
-   (run bash -c "root=$(cd ../../.. && pwd); ./real_sparrow_staged_linking_pe_compare.bc --active $root/_build/real-sparrow/staged-linking-pe/active --reference $root/_build/real-sparrow/staged-linking-pe/frozen --report real_sparrow_staged_linking_pe.source-lineage-check.json --bta-report real_sparrow_staged_linking_pe.bta-report.json --residual-report real_sparrow_staged_linking_pe.residual-execution.json")
-   (run bash -c "root=$(cd ../../.. && pwd); ./real_sparrow_staged_linking_pe_audit.bc --repo-root $root --report real_sparrow_staged_linking_pe.audit.json"))))
+	   (run bash -c "root=$(cd ../../.. && pwd); rm -rf $root/_build/real-sparrow/premerge-linked-observer/active $root/_build/real-sparrow/premerge-linked-observer/frozen $root/_build/real-sparrow/premerge-linked-observer/residual")
+	   (run bash -c "root=$(cd ../../.. && pwd); ./real_sparrow_premerge_linked_observer_dump.bc --group cross_file_direct_call:fixtures/real_premerge_linked_observer/cross_file_direct_call/main.c,fixtures/real_premerge_linked_observer/cross_file_direct_call/callee.c --group cross_file_global_update:fixtures/real_premerge_linked_observer/cross_file_global_update/main.c,fixtures/real_premerge_linked_observer/cross_file_global_update/state.c --group cross_file_branch_join:fixtures/real_premerge_linked_observer/cross_file_branch_join/main.c,fixtures/real_premerge_linked_observer/cross_file_branch_join/branch.c --group extern_boundary_linked:fixtures/real_premerge_linked_observer/extern_boundary_linked/main.c,fixtures/real_premerge_linked_observer/extern_boundary_linked/callee.c --group extern_independent_all_static:fixtures/real_premerge_linked_observer/extern_independent_all_static/main.c,fixtures/real_premerge_linked_observer/extern_independent_all_static/math.c --group linked_loop_widen_narrow:fixtures/real_premerge_linked_observer/linked_loop_widen_narrow/main.c,fixtures/real_premerge_linked_observer/linked_loop_widen_narrow/step.c --out $root/_build/real-sparrow/premerge-linked-observer/active")
+   ; Frozen Sparrow still exposes the legacy observer executable name.  This is
+   ; a reference/oracle call only; the active lane is the premerge observer above.
+	   (run bash -c "root=$(cd ../../.. && pwd); mkdir -p $root/_build/real-sparrow; flock $root/_build/real-sparrow/frozen-observer.lock -c \"cd $root/../sparrow && dune exec test/real_staged_linking_observer.exe -- --group cross_file_direct_call:$root/test/fixtures/real_premerge_linked_observer/cross_file_direct_call/main.c,$root/test/fixtures/real_premerge_linked_observer/cross_file_direct_call/callee.c --group cross_file_global_update:$root/test/fixtures/real_premerge_linked_observer/cross_file_global_update/main.c,$root/test/fixtures/real_premerge_linked_observer/cross_file_global_update/state.c --group cross_file_branch_join:$root/test/fixtures/real_premerge_linked_observer/cross_file_branch_join/main.c,$root/test/fixtures/real_premerge_linked_observer/cross_file_branch_join/branch.c --group extern_boundary_linked:$root/test/fixtures/real_premerge_linked_observer/extern_boundary_linked/main.c,$root/test/fixtures/real_premerge_linked_observer/extern_boundary_linked/callee.c --group extern_independent_all_static:$root/test/fixtures/real_premerge_linked_observer/extern_independent_all_static/main.c,$root/test/fixtures/real_premerge_linked_observer/extern_independent_all_static/math.c --group linked_loop_widen_narrow:$root/test/fixtures/real_premerge_linked_observer/linked_loop_widen_narrow/main.c,$root/test/fixtures/real_premerge_linked_observer/linked_loop_widen_narrow/step.c --out $root/_build/real-sparrow/premerge-linked-observer/frozen\"")
+   (run bash -c "root=$(cd ../../.. && pwd); ./real_sparrow_premerge_linked_observer_compare.bc --active $root/_build/real-sparrow/premerge-linked-observer/active --reference $root/_build/real-sparrow/premerge-linked-observer/frozen --report real_sparrow_premerge_linked_observer.source-lineage-check.json --bta-report real_sparrow_premerge_linked_observer.bta-report.json --residual-report real_sparrow_premerge_linked_observer.residual-execution.json")
+   (run bash -c "root=$(cd ../../.. && pwd); ./real_sparrow_premerge_linked_observer_audit.bc --repo-root $root --report real_sparrow_premerge_linked_observer.audit.json"))))
 
 (rule
  (alias abstract_speculate_metaocaml_sparse_pe)
@@ -230,6 +234,21 @@
    (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_staged_bta_fixpoint.bc --artifact-dir $root/_build/real-sparrow/abstract-speculate-metaocaml-sparse/active")
    (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_metaocaml_sparse_forbidden_shortcuts.bc --repo-root $(cd ../../.. && pwd) --artifact-dir $root/_build/real-sparrow/abstract-speculate-metaocaml-sparse/active")
    (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_pe_audit.bc --repo-root $root --source-lineage-report abstract_speculate_metaocaml_sparse.source-lineage-check.json --module-boundary-report abstract_speculate_metaocaml_sparse.module-boundary-report.json --fact-provenance-report abstract_speculate_metaocaml_sparse.fact-provenance.json --bta-report abstract_speculate_metaocaml_sparse.bta-report.json --residual-report abstract_speculate_metaocaml_sparse.residual-inspection.json --forbidden-source-report abstract_speculate_metaocaml_sparse.forbidden-source-scan.json --report abstract_speculate_metaocaml_sparse.audit.json"))))
+
+(rule
+ (alias abstract_speculate_residual_linking_pe)
+ (targets abstract_speculate_residual_linking_pe.report.json)
+ (deps
+  abstract_speculate_residual_linking_pe_dump.bc
+  abstract_speculate_residual_linking_pe_check.bc
+  fixtures/abstract_speculate_residual_linking_pe/importer.c
+  fixtures/abstract_speculate_residual_linking_pe/provider.c
+  ../doc/experiments/abstract-speculate-residual-linking-pe.md)
+ (action
+  (progn
+   (run bash -c "root=$(cd ../../.. && pwd); rm -rf $root/_build/real-sparrow/abstract-speculate-residual-linking-pe")
+   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_linking_pe_dump.bc --module fixtures/abstract_speculate_residual_linking_pe/importer.c --module fixtures/abstract_speculate_residual_linking_pe/provider.c --out $root/_build/real-sparrow/abstract-speculate-residual-linking-pe/active")
+   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_linking_pe_check.bc --repo-root $root --artifact-dir $root/_build/real-sparrow/abstract-speculate-residual-linking-pe/active --report abstract_speculate_residual_linking_pe.report.json"))))
 
 (alias
  (name abstract_speculate_pe_proof)

@@ -30,6 +30,32 @@ let make_extern_effects ~source ~hash ~extern_roots =
       ]) extern_roots);
   ]
 
+let make_linked_extern_effects ~source ~hash ~extern_roots ~linked_effects =
+  let effect_for root =
+    match List.assoc_opt root linked_effects with
+    | Some (value, provenance) ->
+        `Assoc [
+          "node", `String root;
+          "reason", `String "linked-provider-return";
+          "value", `Int value;
+          "stage2_obligation", `String "dynamic external/link fact derived from provider stage2 output";
+          "linked_derivation_source", `String "provider-stage2-output";
+          "linked_provenance", provenance;
+        ]
+    | None ->
+        failwith ("missing linked provider return for extern root: " ^ root)
+  in
+  `Assoc [
+    "schema_version", `String "abstract-speculate-extern-effects/v2";
+    "source_file", `String source;
+    "source_hash", `String hash;
+    "extern_roots", `List (List.map (fun root -> `String root) extern_roots);
+    "row_overrides", `List [];
+    "effects", `List (List.map effect_for extern_roots);
+    "derivation", `String "linked-environment";
+    "linked_derivation_source", `String "provider-stage2-output";
+  ]
+
 let int_field name = function
   | `Assoc fields -> (match List.assoc_opt name fields with Some (`Int n) -> Some n | _ -> None)
   | _ -> None

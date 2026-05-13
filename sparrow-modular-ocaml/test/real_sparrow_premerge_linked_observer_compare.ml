@@ -3,7 +3,7 @@ let reference_dir = ref ""
 let report = ref ""
 let bta_report = ref ""
 let residual_report = ref ""
-let usage = "real_sparrow_staged_linking_pe_compare --active <dir> --reference <dir> --report <json> --bta-report <json> --residual-report <json>"
+let usage = "real_sparrow_premerge_linked_observer_compare --active <dir> --reference <dir> --report <json> --bta-report <json> --residual-report <json>"
 
 let member = Yojson.Safe.Util.member
 let to_list = Yojson.Safe.Util.to_list
@@ -221,19 +221,19 @@ let () =
          int_member "extern_root_match_count" log = int_member "extern_root_count" log)
   in
   let json = `Assoc [
-    "schema_version", `String Sparrow_modular_ocaml.Real_sparrow_staged_linking_pe.schema_version;
-    "claim", `String "linked ItvDom staged linking PE residual final-table parity";
+    "schema_version", `String Sparrow_modular_ocaml.Real_sparrow_premerge_linked_observer.schema_version;
+    "claim", `String "linked ItvDom premerge linked observer residual final-table parity";
     "relation", `String (if all_equiv then "structural-equiv" else "structural-diverge");
     "fixtures", `List fixtures;
   ] in
   let bta = `Assoc [
-    "schema_version", `String Sparrow_modular_ocaml.Real_sparrow_staged_linking_pe.bta_schema_version;
+    "schema_version", `String Sparrow_modular_ocaml.Real_sparrow_premerge_linked_observer.bta_schema_version;
     "status", `String (if bta_ok then "pass" else "fail");
     "allowed_dynamic_reasons", `List [`String "unknown-extern-call"; `String "transitively-extern-dependent"];
     "fixtures", `List bta_fixtures;
   ] in
   let residual = `Assoc [
-    "schema_version", `String Sparrow_modular_ocaml.Real_sparrow_staged_linking_pe.residual_schema_version;
+    "schema_version", `String Sparrow_modular_ocaml.Real_sparrow_premerge_linked_observer.residual_schema_version;
     "status", `String (if residual_ok && all_equiv then "pass" else "fail");
     "json_is_summary_only", `Bool false;
     "fixtures", `List residual_outputs;
@@ -242,4 +242,4 @@ let () =
   Sparrow_modular_ocaml.Real_sparrow_artifact.write_json !bta_report bta;
   Sparrow_modular_ocaml.Real_sparrow_artifact.write_json !residual_report residual;
   if all_equiv && bta_ok && residual_ok then print_endline ("PASS " ^ !report)
-  else failwith "Staged linking PE parity failed; see reports"
+  else failwith "Premerge linked observer parity failed; see reports"

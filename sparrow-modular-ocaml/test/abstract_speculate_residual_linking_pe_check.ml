@@ -1,0 +1,546 @@
+let repo_root = ref "."
+let artifact_dir = ref ""
+let report = ref ""
+
+let usage =
+  "abstract_speculate_residual_linking_pe_check --repo-root <repo> --artifact-dir <dir> --report <json>"
+
+let member = Yojson.Safe.Util.member
+let to_string = Yojson.Safe.Util.to_string
+
+let expect cond msg = if not cond then failwith msg
+
+let assoc_field name = function
+  | `Assoc fields -> List.assoc_opt name fields
+  | _ -> None
+
+let string_field name json = match assoc_field name json with Some (`String s) -> s | _ -> ""
+let bool_field name json = match assoc_field name json with Some (`Bool b) -> b | _ -> false
+let int_field name json = match assoc_field name json with Some (`Int n) -> n | _ -> 0
+let list_field name json = match assoc_field name json with Some (`List xs) -> xs | _ -> []
+let bool_true_field name json = match assoc_field name json with Some (`Bool true) -> true | _ -> false
+let opt_int_field name json = match assoc_field name json with Some (`Int n) -> Some n | _ -> None
+
+let read_file path =
+  let ic = open_in path in
+  let len = in_channel_length ic in
+  let data = really_input_string ic len in
+  close_in ic;
+  data
+
+let contains s sub =
+  let len = String.length s and sub_len = String.length sub in
+  let rec loop i = i + sub_len <= len && (String.sub s i sub_len = sub || loop (i + 1)) in
+  sub_len = 0 || loop 0
+
+let project_path rel =
+  let direct = Filename.concat !repo_root rel in
+  if Sys.file_exists direct then direct
+  else
+    let prefix = "sparrow-modular-ocaml/" in
+    let prefix_len = String.length prefix in
+    if String.length rel > prefix_len && String.sub rel 0 prefix_len = prefix then
+      Filename.concat !repo_root (String.sub rel prefix_len (String.length rel - prefix_len))
+    else direct
+
+let forbidden_global_entry = "Real_sparrow_frontend." ^ "global_for_" ^ "files"
+let forbidden_merge_entry = "Mergecil." ^ "merge"
+let old_staged_linking_entry = "real_sparrow_" ^ "staged_linking_pe"
+let premerge_observer_entry = "real_sparrow_" ^ "premerge_linked_observer"
+
+let require_source_absent path =
+  let source = read_file path in
+  [forbidden_global_entry; forbidden_merge_entry; old_staged_linking_entry; premerge_observer_entry]
+  |> List.iter (fun needle ->
+       expect (not (contains source needle)) (path ^ " contains forbidden shortcut " ^ needle))
+
+let linked_artifact_path manifest = string_field "linked_artifact" manifest
+let artifact_paths manifest = list_field "artifacts" manifest |> List.map to_string
+let linked_output linked = member "linked_output" linked
+
+let unique_string_set xs = List.sort_uniq String.compare xs
+let has_duplicates xs = List.length xs <> List.length (unique_string_set xs)
+let same_set left right = unique_string_set left = unique_string_set right
+
+let int_of_trimmed s =
+  try Some (int_of_string (String.trim s)) with Failure _ -> None
+
+let parse_singleton_interval_value value =
+  let value = String.trim value in
+  match int_of_trimmed value with
+  | Some n -> Some n
+  | None ->
+      let prefix = "([" in
+      let prefix_len = String.length prefix in
+      if String.length value <= prefix_len || String.sub value 0 prefix_len <> prefix then None
+      else
+        try
+          let comma = String.index_from value prefix_len ',' in
+          let close = String.index_from value (comma + 1) ']' in
+          match
+            int_of_trimmed (String.sub value prefix_len (comma - prefix_len)),
+            int_of_trimmed (String.sub value (comma + 1) (close - comma - 1))
+          with
+          | Some lo, Some hi when lo = hi -> Some lo
+          | _ -> None
+        with Not_found -> None
+
+let row_memory row = list_field "memory" row
+
+let memory_cell ~location row =
+  row_memory row
+  |> List.find_opt (fun cell -> string_field "location" cell = location)
+
+let provider_return_from_linked_output linked ~provider_module ~export_name =
+  let location = "(" ^ export_name ^ ",__return__)" in
+  let rows = list_field "final_output_table" (linked_output linked) in
+  rows
+  |> List.find_map (fun row ->
+       if string_field "linked_module_id" row = provider_module then
+         match memory_cell ~location row with
+         | Some cell ->
+             parse_singleton_interval_value (string_field "value" cell)
+             |> Option.map (fun value -> string_field "node" row, string_field "value" cell, value)
+         | None -> None
+       else None)
+
+let importer_dynamic_call_value linked ~importer_module ~extern_root =
+  let rows = list_field "final_output_table" (linked_output linked) in
+  rows
+  |> List.find_map (fun row ->
+       if string_field "linked_module_id" row = importer_module &&
+          string_field "node" row = extern_root then
+         row_memory row
+         |> List.find_map (fun cell ->
+              if contains (string_field "transfer_event" cell) "extern-call-result" then
+                opt_int_field "residual_arithmetic_value" cell
+              else None)
+       else None)
+
+let semantic_export_key json =
+  string_field "provider_module" json ^ ":" ^ string_field "export_name" json
+
+let find_semantic_export linked ~provider_module ~export_name =
+  list_field "semantic_exports" linked
+  |> List.find_opt (fun export ->
+       string_field "provider_module" export = provider_module &&
+       string_field "export_name" export = export_name)
+
+let phase_index linked ~module_id ~event_prefix =
+  list_field "phase_log" linked
+  |> List.find_map (fun event ->
+       if string_field "module_id" event = module_id &&
+          contains (string_field "event" event) event_prefix then
+         Some (int_field "phase_index" event)
+       else None)
+
+let phases_ordered linked ~provider_module ~importer_module ~export_name =
+  match
+    phase_index linked ~module_id:provider_module ~event_prefix:"provider-stage2-executed",
+    phase_index linked ~module_id:provider_module ~event_prefix:("semantic-export-derived:" ^ export_name),
+    phase_index linked ~module_id:importer_module ~event_prefix:("linked-environment-bound:" ^ export_name),
+    phase_index linked ~module_id:importer_module ~event_prefix:"importer-stage2-executed-with-linked-environment"
+  with
+  | Some provider_i, Some export_i, Some env_i, Some importer_i ->
+      provider_i < export_i && export_i < env_i && env_i < importer_i
+  | _ -> false
+
+let semantic_linkage_ok linked =
+  let exports = list_field "semantic_exports" linked in
+  let env = list_field "linked_environment" linked in
+  let derivation = list_field "linked_stage2_input_derivation" linked in
+  exports <> [] &&
+  env <> [] &&
+  derivation <> [] &&
+  string_field "dispatch" (member "linked_stage2_input" linked) = "provider-derived-linked-environment" &&
+  bool_field "linked_environment_generated" (member "linked_stage2_input" linked) &&
+  string_field "derivation_source" (member "linked_stage2_input" linked) = "provider-stage2-output" &&
+  List.for_all (fun entry ->
+    let provider_module = string_field "provider_module" entry in
+    let importer_module = string_field "importer_module" entry in
+    let export_name = string_field "export_name" entry in
+    let extern_root = string_field "importer_extern_root" entry in
+    let linked_value = int_field "linked_return_value" entry in
+    match find_semantic_export linked ~provider_module ~export_name with
+    | None -> false
+    | Some export ->
+        string_field "derivation_source" export = "provider-stage2-output" &&
+        string_field "derivation_source" entry = "provider-stage2-output" &&
+        int_field "return_value" export = linked_value &&
+        begin match provider_return_from_linked_output linked ~provider_module ~export_name with
+        | Some (_node, abstract_value, provider_value) ->
+            provider_value = linked_value &&
+            string_field "abstract_return_value" export = abstract_value
+        | None -> false
+        end &&
+        begin match importer_dynamic_call_value linked ~importer_module ~extern_root with
+        | Some importer_value -> importer_value = linked_value
+        | None -> false
+        end &&
+        phases_ordered linked ~provider_module ~importer_module ~export_name &&
+        List.exists (fun derivation_entry ->
+          string_field "importer_module" derivation_entry = importer_module &&
+          string_field "importer_extern_root" derivation_entry = extern_root &&
+          string_field "provider_module" derivation_entry = provider_module &&
+          string_field "export_name" derivation_entry = export_name &&
+          string_field "derivation_source" derivation_entry = "provider-stage2-output" &&
+          string_field "effect_reason" derivation_entry = "linked-provider-return" &&
+          int_field "linked_return_value" derivation_entry = linked_value)
+          derivation)
+    env &&
+  not (has_duplicates (List.map semantic_export_key exports))
+
+let key_of_module_json json = string_field "module_id" json ^ ":" ^ string_field "source_hash" json
+let key_of_log_json json = string_field "module_id" json ^ ":" ^ string_field "source_hash" json
+
+let input_modules linked = list_field "input_modules" linked
+let execution_log linked = member "execution_log" (linked_output linked)
+let log_evidence linked = member "linked_residual_analyzer_evidence" (execution_log linked)
+let top_evidence linked = member "linked_residual_analyzer_evidence" linked
+let output_evidence linked = member "linked_residual_analyzer_evidence" (linked_output linked)
+
+let linked_stage2_keys linked =
+  match assoc_field "keys" (member "linked_stage2_input" linked) with
+  | Some (`List xs) -> List.map to_string xs
+  | _ -> []
+
+type recomputed_evidence = {
+  linked_execute_returned : bool;
+  module_count : int;
+  module_analyzers_executed : int;
+  module_identity_set_matches : bool;
+  all_modules_executed : bool;
+  final_input_row_count : int;
+  final_output_row_count : int;
+  linked_residual_row_count : int;
+  residual_rows_observed : bool;
+  matched_obligation_count : int;
+  unresolved_obligation_count : int;
+  obligations_closed : bool;
+  no_shortcut_path : bool;
+  derived_from_five_predicates : bool;
+  linked_residual_analyzer_ran : bool;
+}
+
+let valid_module_artifact path =
+  try
+    let artifact = Yojson.Safe.from_file path in
+    let boundary = member "module_boundary" artifact in
+    let forbidden = list_field "forbidden_prelink_entrypoints" boundary |> List.map to_string in
+    string_field "scope" artifact = "module-only-pre-link" &&
+    bool_field "linked_entrypoints_used" boundary = false &&
+    List.mem forbidden_global_entry forbidden &&
+    List.mem forbidden_merge_entry forbidden
+  with _ -> false
+
+let recompute_evidence ~source_guard_passed ~manifest linked =
+  let inputs = input_modules linked in
+  let logs = list_field "module_logs" (execution_log linked) in
+  let input_keys = List.map key_of_module_json inputs in
+  let declared_input_keys = List.map (string_field "stage2_input_key") inputs in
+  let stage2_keys = linked_stage2_keys linked in
+  let log_keys = List.map key_of_log_json logs in
+  let module_count = int_field "module_count" linked in
+  let module_analyzers_executed = List.length logs in
+  let input_key_fields_match = same_set input_keys declared_input_keys in
+  let module_identity_set_matches =
+    module_count = List.length inputs &&
+    input_key_fields_match &&
+    same_set input_keys stage2_keys &&
+    same_set input_keys log_keys &&
+    not (has_duplicates input_keys) &&
+    not (has_duplicates stage2_keys) &&
+    not (has_duplicates log_keys)
+  in
+  let module_logs_executed =
+    logs <> [] &&
+    List.for_all (fun log ->
+      bool_field "module_analyzer_executed" log &&
+      List.mem (string_field "stage2_input_dispatch" log) ["per-module"; "linked-environment"]) logs &&
+    List.exists (fun log -> string_field "stage2_input_dispatch" log = "linked-environment") logs
+  in
+  let all_modules_executed =
+    module_count >= 2 &&
+    module_analyzers_executed = module_count &&
+    module_logs_executed &&
+    module_identity_set_matches
+  in
+  let output = linked_output linked in
+  let final_input_row_count = List.length (list_field "final_input_table" output) in
+  let final_output_row_count = List.length (list_field "final_output_table" output) in
+  let linked_residual_row_count = final_input_row_count + final_output_row_count in
+  let residual_rows_observed = linked_residual_row_count > 0 in
+  let matched_obligation_count = List.length (list_field "matched_obligations" linked) in
+  let unresolved_obligation_count = List.length (list_field "unresolved_obligations" linked) in
+  let obligations_closed = matched_obligation_count > 0 && unresolved_obligation_count = 0 in
+  let manifest_artifacts = artifact_paths manifest in
+  let input_artifacts = List.map (string_field "artifact_path") inputs in
+  let artifact_sets_match =
+    input_artifacts <> [] &&
+    same_set manifest_artifacts input_artifacts &&
+    not (has_duplicates input_artifacts)
+  in
+  let module_artifacts_valid = List.for_all valid_module_artifact input_artifacts in
+  let no_shortcut_path =
+    source_guard_passed &&
+    artifact_sets_match &&
+    module_artifacts_valid &&
+    string_field "dispatch" (member "linked_stage2_input" linked) = "provider-derived-linked-environment" &&
+    bool_field "linked_environment_generated" (member "linked_stage2_input" linked) &&
+    same_set input_keys stage2_keys &&
+    bool_field "linked_entrypoints_used_before_pe" linked = false &&
+    bool_field "linked_facts_prelink" linked = false
+  in
+  let linked_execute_returned = bool_true_field "linked_execute_returned" (log_evidence linked) in
+  let derived_from_five_predicates = bool_true_field "derived_from_five_predicates" (log_evidence linked) in
+  let linked_residual_analyzer_ran =
+    linked_execute_returned &&
+    all_modules_executed &&
+    residual_rows_observed &&
+    obligations_closed &&
+    no_shortcut_path &&
+    derived_from_five_predicates &&
+    semantic_linkage_ok linked
+  in
+  {
+    linked_execute_returned;
+    module_count;
+    module_analyzers_executed;
+    module_identity_set_matches;
+    all_modules_executed;
+    final_input_row_count;
+    final_output_row_count;
+    linked_residual_row_count;
+    residual_rows_observed;
+    matched_obligation_count;
+    unresolved_obligation_count;
+    obligations_closed;
+    no_shortcut_path;
+    derived_from_five_predicates;
+    linked_residual_analyzer_ran;
+  }
+
+let expect_evidence_matches label evidence recomputed =
+  expect (bool_field "linked_execute_returned" evidence = recomputed.linked_execute_returned)
+    (label ^ ": linked_execute_returned mismatch");
+  expect (int_field "module_count" evidence = recomputed.module_count)
+    (label ^ ": module_count mismatch");
+  expect (int_field "module_analyzers_executed" evidence = recomputed.module_analyzers_executed)
+    (label ^ ": module_analyzers_executed mismatch");
+  expect (bool_field "module_identity_set_matches" evidence = recomputed.module_identity_set_matches)
+    (label ^ ": module_identity_set_matches mismatch");
+  expect (bool_field "all_modules_executed" evidence = recomputed.all_modules_executed)
+    (label ^ ": all_modules_executed mismatch");
+  expect (int_field "final_input_row_count" evidence = recomputed.final_input_row_count)
+    (label ^ ": final_input_row_count mismatch");
+  expect (int_field "final_output_row_count" evidence = recomputed.final_output_row_count)
+    (label ^ ": final_output_row_count mismatch");
+  expect (int_field "linked_residual_row_count" evidence = recomputed.linked_residual_row_count)
+    (label ^ ": linked_residual_row_count mismatch");
+  expect (bool_field "residual_rows_observed" evidence = recomputed.residual_rows_observed)
+    (label ^ ": residual_rows_observed mismatch");
+  expect (int_field "matched_obligation_count" evidence = recomputed.matched_obligation_count)
+    (label ^ ": matched_obligation_count mismatch");
+  expect (int_field "unresolved_obligation_count" evidence = recomputed.unresolved_obligation_count)
+    (label ^ ": unresolved_obligation_count mismatch");
+  expect (bool_field "obligations_closed" evidence = recomputed.obligations_closed)
+    (label ^ ": obligations_closed mismatch");
+  expect (bool_field "no_shortcut_path" evidence = recomputed.no_shortcut_path)
+    (label ^ ": no_shortcut_path mismatch");
+  expect (bool_field "derived_from_five_predicates" evidence = recomputed.derived_from_five_predicates)
+    (label ^ ": derived_from_five_predicates mismatch");
+  expect (bool_field "linked_residual_analyzer_ran" evidence = recomputed.linked_residual_analyzer_ran)
+    (label ^ ": linked_residual_analyzer_ran mismatch")
+
+let rec set_path path value json =
+  match path, json with
+  | [], _ -> value
+  | key :: rest, `Assoc fields ->
+      let old = match List.assoc_opt key fields with Some v -> v | None -> `Assoc [] in
+      `Assoc ((key, set_path rest value old) :: List.remove_assoc key fields)
+  | _ :: _, other -> other
+
+let false_case label manifest linked mutate =
+  let mutated = mutate linked in
+  let evidence = recompute_evidence ~source_guard_passed:true ~manifest mutated in
+  expect (not evidence.linked_residual_analyzer_ran) ("false case stayed true: " ^ label)
+
+let run_false_case_checks manifest linked =
+  false_case "linked_execute_returned" manifest linked (fun json ->
+    set_path ["linked_output"; "execution_log"; "linked_residual_analyzer_evidence"; "linked_execute_returned"] (`Bool false) json);
+  false_case "module identity mismatch" manifest linked (fun json ->
+    match list_field "module_logs" (execution_log json) with
+    | first :: rest ->
+        let wrong = set_path ["source_hash"] (`String "wrong-source-hash") first in
+        set_path ["linked_output"; "execution_log"; "module_logs"] (`List (wrong :: rest)) json
+    | [] -> json);
+  false_case "duplicate module log" manifest linked (fun json ->
+    match list_field "module_logs" (execution_log json) with
+    | first :: _ ->
+        let module_count = int_field "module_count" json in
+        set_path ["linked_output"; "execution_log"; "module_logs"] (`List [first; first])
+        (set_path ["module_count"] (`Int module_count) json)
+    | [] -> json);
+  false_case "zero residual rows" manifest linked (fun json ->
+    json
+    |> set_path ["linked_output"; "final_input_table"] (`List [])
+    |> set_path ["linked_output"; "final_output_table"] (`List []));
+  false_case "no matched obligations" manifest linked (fun json ->
+    set_path ["matched_obligations"] (`List []) json);
+  false_case "unresolved obligations" manifest linked (fun json ->
+    set_path ["unresolved_obligations"] (`List [`Assoc ["name", `String "missing"]]) json);
+  let shortcut_false = recompute_evidence ~source_guard_passed:false ~manifest linked in
+  expect (not shortcut_false.linked_residual_analyzer_ran) "false case stayed true: no shortcut source guard";
+  false_case "dispatch mismatch" manifest linked (fun json ->
+    set_path ["linked_stage2_input"; "dispatch"] (`String "premerge") json);
+  false_case "missing semantic exports" manifest linked (fun json ->
+    set_path ["semantic_exports"] (`List []) json);
+  false_case "wrong semantic export source" manifest linked (fun json ->
+    match list_field "semantic_exports" json with
+    | first :: rest ->
+        let wrong = set_path ["derivation_source"] (`String "declaration-only") first in
+        set_path ["semantic_exports"] (`List (wrong :: rest)) json
+    | [] -> json);
+  false_case "mutated provider return summary" manifest linked (fun json ->
+    match list_field "semantic_exports" json with
+    | first :: rest ->
+        let wrong = set_path ["return_value"] (`Int 999) first in
+        set_path ["semantic_exports"] (`List (wrong :: rest)) json
+    | [] -> json);
+  false_case "missing linked environment" manifest linked (fun json ->
+    set_path ["linked_environment"] (`List []) json);
+  false_case "manual extern value masquerade" manifest linked (fun json ->
+    match list_field "linked_stage2_input_derivation" json with
+    | first :: rest ->
+        let wrong =
+          first
+          |> set_path ["effect_reason"] (`String "unknown-extern-call")
+          |> set_path ["derivation_source"] (`String "manual-extern-effect")
+        in
+        set_path ["linked_stage2_input_derivation"] (`List (wrong :: rest)) json
+    | [] -> json);
+  false_case "mismatched importer/provider value" manifest linked (fun json ->
+    match list_field "linked_environment" json with
+    | first :: rest ->
+        let wrong = set_path ["linked_return_value"] (`Int 999) first in
+        set_path ["linked_environment"] (`List (wrong :: rest)) json
+    | [] -> json);
+  false_case "provider after importer order" manifest linked (fun json ->
+    match list_field "phase_log" json with
+    | events ->
+        let mutated =
+          events |> List.map (fun event ->
+            if string_field "event" event = "provider-stage2-executed" then
+              set_path ["phase_index"] (`Int 9) event
+            else event)
+        in
+        set_path ["phase_log"] (`List mutated) json);
+  false_case "wrong obligation mapping" manifest linked (fun json ->
+    match list_field "linked_environment" json with
+    | first :: rest ->
+        let wrong = set_path ["provider_module"] (`String "wrong-provider.c") first in
+        set_path ["linked_environment"] (`List (wrong :: rest)) json
+    | [] -> json)
+
+let evidence_to_json evidence =
+  `Assoc [
+    "linked_execute_returned", `Bool evidence.linked_execute_returned;
+    "module_count", `Int evidence.module_count;
+    "module_analyzers_executed", `Int evidence.module_analyzers_executed;
+    "module_identity_set_matches", `Bool evidence.module_identity_set_matches;
+    "all_modules_executed", `Bool evidence.all_modules_executed;
+    "final_input_row_count", `Int evidence.final_input_row_count;
+    "final_output_row_count", `Int evidence.final_output_row_count;
+    "linked_residual_row_count", `Int evidence.linked_residual_row_count;
+    "residual_rows_observed", `Bool evidence.residual_rows_observed;
+    "matched_obligation_count", `Int evidence.matched_obligation_count;
+    "unresolved_obligation_count", `Int evidence.unresolved_obligation_count;
+    "obligations_closed", `Bool evidence.obligations_closed;
+    "no_shortcut_path", `Bool evidence.no_shortcut_path;
+    "derived_from_five_predicates", `Bool evidence.derived_from_five_predicates;
+    "linked_residual_analyzer_ran", `Bool evidence.linked_residual_analyzer_ran;
+  ]
+
+let () =
+  Arg.parse
+    ["--repo-root", Arg.Set_string repo_root, "repository root";
+     "--artifact-dir", Arg.Set_string artifact_dir, "active artifact directory";
+     "--report", Arg.Set_string report, "report path"]
+    (fun arg -> raise (Arg.Bad ("unexpected argument: " ^ arg))) usage;
+  if !artifact_dir = "" || !report = "" then failwith usage;
+  let manifest_path = Filename.concat !artifact_dir "manifest.json" in
+  expect (Sys.file_exists manifest_path) ("missing manifest: " ^ manifest_path);
+  let manifest = Yojson.Safe.from_file manifest_path in
+  let artifacts = artifact_paths manifest in
+  expect (List.length artifacts >= 2) "expected at least two independent module artifacts";
+  artifacts |> List.iter (fun path ->
+    let artifact = Yojson.Safe.from_file path in
+    expect (string_field "scope" artifact = "module-only-pre-link") (path ^ ": not module-only-pre-link");
+    expect (bool_field "linked_entrypoints_used" (member "module_boundary" artifact) = false)
+      (path ^ ": linked entrypoint used before PE"));
+  let linked_path = linked_artifact_path manifest in
+  expect (linked_path <> "") "manifest missing linked_artifact";
+  expect (Sys.file_exists linked_path) ("missing linked artifact: " ^ linked_path);
+  let linked = Yojson.Safe.from_file linked_path in
+  expect (string_field "artifact_kind" linked = "abstract-speculate-linked-residual-analyzer")
+    "linked artifact kind mismatch";
+  expect (int_field "module_count" linked >= 2) "linked artifact module_count < 2";
+  expect (bool_field "residual_linking_performed" linked) "residual linking was not performed";
+  expect (bool_field "per_module_stage2_inputs_used" linked) "per-module stage2 input dispatch missing";
+  expect (bool_field "provider_derived_importer_inputs_used" linked) "provider-derived importer inputs missing";
+  expect (bool_field "linked_facts_prelink" linked = false) "linked facts were used before PE";
+  expect (bool_field "metadata_only_proof" linked = false) "metadata-only proof accepted";
+  expect (list_field "declared_imports" linked <> []) "no parsed-CIL imports recorded";
+  expect (list_field "declared_exports" linked <> []) "no parsed-CIL exports recorded";
+  expect (list_field "matched_obligations" linked <> []) "no matched structural obligations recorded";
+  let output = linked_output linked in
+  let log = execution_log linked in
+  expect (bool_field "per_module_stage2_inputs_used" log) "linked output log missing per-module dispatch";
+  expect (bool_field "provider_derived_importer_inputs_used" log)
+    "linked output log missing provider-derived importer input dispatch";
+  require_source_absent (project_path "sparrow-modular-ocaml/src/abstract_speculate_residual_linker.ml");
+  require_source_absent (project_path "sparrow-modular-ocaml/test/abstract_speculate_residual_linking_pe_dump.ml");
+  let recomputed = recompute_evidence ~source_guard_passed:true ~manifest linked in
+  expect_evidence_matches "top evidence" (top_evidence linked) recomputed;
+  expect_evidence_matches "linked output evidence" (output_evidence linked) recomputed;
+  expect_evidence_matches "execution log evidence" (log_evidence linked) recomputed;
+  expect (bool_field "linked_residual_analyzer_ran" linked = recomputed.linked_residual_analyzer_ran)
+    "top-level linked_residual_analyzer_ran does not match recomputed evidence";
+  expect (bool_field "linked_residual_analyzer_ran" log = recomputed.linked_residual_analyzer_ran)
+    "execution-log linked_residual_analyzer_ran does not match recomputed evidence";
+  expect recomputed.linked_residual_analyzer_ran "linked residual analyzer evidence predicate is false";
+  expect (recomputed.final_input_row_count = List.length (list_field "final_input_table" output))
+    "final input row count is not recomputed from linked output";
+  expect (recomputed.final_output_row_count = List.length (list_field "final_output_table" output))
+    "final output row count is not recomputed from linked output";
+  run_false_case_checks manifest linked;
+  let report_json = `Assoc [
+    "schema_version", `String Sparrow_modular_ocaml.Abstract_speculate_residual_linker.schema_version;
+    "status", `String "pass";
+    "module_artifact_count", `Int (List.length artifacts);
+    "linked_artifact", `String linked_path;
+    "linked_residual_analyzer_evidence", evidence_to_json recomputed;
+    "matched_obligation_count", `Int recomputed.matched_obligation_count;
+    "unresolved_obligation_count", `Int recomputed.unresolved_obligation_count;
+    "per_module_stage2_inputs_used", `Bool true;
+    "linked_residual_analyzer_ran", `Bool recomputed.linked_residual_analyzer_ran;
+    "shortcut_guard", `String "pass";
+    "false_case_checks", `List [
+      `String "linked_execute_returned";
+      `String "module_identity_set";
+      `String "duplicate_module_log";
+      `String "residual_rows_observed";
+      `String "obligations_closed";
+      `String "no_shortcut_path";
+      `String "semantic_exports";
+      `String "semantic_export_source";
+      `String "provider_return_summary";
+      `String "linked_environment";
+      `String "manual_extern_value";
+      `String "provider_importer_value_match";
+      `String "provider_before_importer_order";
+      `String "obligation_mapping";
+    ];
+  ] in
+  Sparrow_modular_ocaml.Real_sparrow_artifact.write_json !report report_json;
+  print_endline "abstract_speculate_residual_linking_pe_check: PASS"

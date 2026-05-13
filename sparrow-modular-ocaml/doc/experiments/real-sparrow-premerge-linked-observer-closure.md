@@ -1,4 +1,4 @@
-# Closure Inventory — Real Sparrow Staged Linking PE
+# Closure Inventory — Real Sparrow Premerge Linked Observer
 
 Date: 2026-05-11
 
@@ -13,7 +13,7 @@ Date: 2026-05-11
 
 ## Baseline scope
 
-`sparrow/src` semantics remain frozen.  The only baseline-side staged-linking
+`sparrow/src` semantics remain frozen.  The only baseline-side premerge linked observer
 addition is `sparrow/test/real_staged_linking_observer.ml`, which links
 `sparrow_lib` as a non-semantic observer.
 

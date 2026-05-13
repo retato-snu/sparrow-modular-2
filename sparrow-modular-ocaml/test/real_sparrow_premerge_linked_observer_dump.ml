@@ -1,6 +1,6 @@
 let groups = ref []
 let out_dir = ref ""
-let usage = "real_sparrow_staged_linking_pe_dump --group <name:file.c,file.c>... --out <dir>"
+let usage = "real_sparrow_premerge_linked_observer_dump --group <name:file.c,file.c>... --out <dir>"
 
 let split_once s ch =
   match String.index_opt s ch with
@@ -13,13 +13,13 @@ let parse_group spec =
   if name = "" || modules = [] then failwith ("invalid group: " ^ spec);
   groups := !groups @ [name, modules]
 
-let artifact_path out_dir name = Filename.concat out_dir (name ^ ".staged-linking-pe.json")
+let artifact_path out_dir name = Filename.concat out_dir (name ^ ".premerge-linked-observer.json")
 let residual_dir out_dir = Filename.concat out_dir "residual"
 
 let write_group (name, modules) =
   let path = artifact_path !out_dir name in
   let json =
-    Sparrow_modular_ocaml.Real_sparrow_staged_linking_pe.artifact_for_group
+    Sparrow_modular_ocaml.Real_sparrow_premerge_linked_observer.artifact_for_group
       ~residual_dir:(residual_dir !out_dir) ~group_name:name modules
   in
   Sparrow_modular_ocaml.Real_sparrow_artifact.write_json path json;
@@ -35,11 +35,11 @@ let () =
   Sparrow_modular_ocaml.Sparrow_cil.initCIL ();
   let paths = List.map write_group !groups in
   let manifest = `Assoc [
-    "schema_version", `String Sparrow_modular_ocaml.Real_sparrow_staged_linking_pe.schema_version;
+    "schema_version", `String Sparrow_modular_ocaml.Real_sparrow_premerge_linked_observer.schema_version;
     "groups", `List (List.map (fun (name, modules) -> `Assoc ["name", `String name; "modules", `List (List.map (fun m -> `String m) modules)]) !groups);
     "artifacts", `List (List.map (fun path -> `String path) paths);
     "count", `Int (List.length paths);
-    "boundary", `String Sparrow_modular_ocaml.Real_sparrow_staged_linking_pe.boundary;
+    "boundary", `String Sparrow_modular_ocaml.Real_sparrow_premerge_linked_observer.boundary;
   ] in
   Sparrow_modular_ocaml.Real_sparrow_artifact.write_json (Filename.concat !out_dir "manifest.json") manifest;
   List.iter print_endline paths

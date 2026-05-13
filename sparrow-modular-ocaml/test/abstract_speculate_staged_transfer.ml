@@ -7,13 +7,12 @@ let expect cond msg = if not cond then failwith msg
 let has_event needle components =
   List.exists (fun c -> c.T.component_kind = "staged-abstract-cell" && c.T.transfer_event = needle) components
 
-let has_semantic_substring needle components =
+let has_semantic_fragment needle components =
   List.exists (fun c ->
     let json = T.component_to_yojson c |> Yojson.Safe.to_string in
-    String.contains json needle.[0] && String.length needle > 0 &&
-    let len = String.length json and sub = String.length needle in
-    let rec loop i = i + sub <= len && (String.sub json i sub = needle || loop (i + 1)) in
-    loop 0)
+    let len = String.length json and n = String.length needle in
+    let rec loop i = i + n <= len && (String.sub json i n = needle || loop (i + 1)) in
+    n = 0 || loop 0)
     components
 
 let output_entries output =
@@ -191,7 +190,7 @@ let () =
   require_value ~semantic:"x := tmp" ~value:41 entries;
   require_value ~semantic:"y := x+1" ~value:42 entries;
   require_stage2_input_mutation_gates call_result;
-  expect (not (has_semantic_substring "ordinal" components))
+  expect (not (has_semantic_fragment "ordinal" components))
     "transfer residual semantics must not be ordinal-only witnesses";
   let branch_result =
     MetaSparse.run_stage1 "fixtures/abstract_speculate_metaocaml_sparse/dynamic_branch.c"

@@ -1,6 +1,6 @@
 let repo_root = ref ".."
 let report = ref ""
-let usage = "real_sparrow_staged_linking_pe_audit --repo-root <path> --report <json>"
+let usage = "real_sparrow_premerge_linked_observer_audit --repo-root <path> --report <json>"
 
 let read_file path = let ic = open_in path in let len = in_channel_length ic in let data = really_input_string ic len in close_in ic; data
 let contains s sub =
@@ -40,7 +40,7 @@ let hits root needles =
        |> List.filter (fun needle -> lines data |> List.exists (fun line -> contains line needle && not (is_nonclaim_line line)))
        |> List.map (fun needle -> `Assoc ["path", `String path; "needle", `String needle]))
 let residual_source_hits root =
-  let residual_dir = Filename.concat root "_build/real-sparrow/staged-linking-pe/active/residual" in
+  let residual_dir = Filename.concat root "_build/real-sparrow/premerge-linked-observer/active/residual" in
   if not (Sys.file_exists residual_dir) then [] else
   let command = Printf.sprintf "find %s -type f -name '*.ml'" (Filename.quote residual_dir) in
   let ic = Unix.open_process_in command in
@@ -63,22 +63,22 @@ let () =
   in
   let docs = [
     project_path root "doc/real-sparrow-lineage.md";
-    project_path root "doc/adr/ADR-0005-real-sparrow-staged-linking-pe.md";
-    project_path root "doc/experiments/real-sparrow-staged-linking-pe.md";
-    project_path root "doc/experiments/real-sparrow-staged-linking-pe-closure.md";
+    project_path root "doc/adr/ADR-0005-real-sparrow-premerge-linked-observer.md";
+    project_path root "doc/experiments/real-sparrow-premerge-linked-observer.md";
+    project_path root "doc/experiments/real-sparrow-premerge-linked-observer-closure.md";
   ] in
   let docs_present = List.for_all file_exists docs in
   let forbidden_hits = hits root forbidden_claim_needles in
   let residual_hits = residual_source_hits root in
   let ok = semantic_clean && docs_present && forbidden_hits = [] && residual_hits = [] in
   let json = `Assoc [
-    "schema_version", `String Sparrow_modular_ocaml.Real_sparrow_staged_linking_pe.audit_schema_version;
+    "schema_version", `String Sparrow_modular_ocaml.Real_sparrow_premerge_linked_observer.audit_schema_version;
     "status", `String (if ok then "pass" else "fail");
     "baseline_semantic_clean", `Bool semantic_clean;
     "docs_present", `Bool docs_present;
     "forbidden_claim_hits", `List forbidden_hits;
     "forbidden_residual_source_hits", `List residual_hits;
-    "claim", `String "linked ItvDom staged linking PE with executable extern-closure residual recomposition; no Alarm/Report, PFS, oct, or domain-generic claim";
+    "claim", `String "linked ItvDom premerge linked observer with executable extern-closure residual recomposition; no Alarm/Report, PFS, oct, or domain-generic claim";
   ] in
   Sparrow_modular_ocaml.Real_sparrow_artifact.write_json !report json;
-  if ok then print_endline ("PASS " ^ !report) else failwith "Staged linking PE audit failed; see report"
+  if ok then print_endline ("PASS " ^ !report) else failwith "Premerge linked observer audit failed; see report"

@@ -1,4 +1,4 @@
-# Experiment Log — Real Sparrow Staged Linking PE
+# Experiment Log — Real Sparrow Premerge Linked Observer
 
 Date: 2026-05-11
 
@@ -6,7 +6,7 @@ Date: 2026-05-11
 
 Prove linked multi-module ItvDom sparse final-table parity before any
 Alarm/Report PE work.  The test-gated alias is
-`@real_sparrow_staged_linking_pe`.
+`@real_sparrow_premerge_linked_observer`.
 
 ## Implemented evidence
 

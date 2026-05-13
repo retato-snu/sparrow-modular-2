@@ -1,0 +1,811 @@
+(***********************************************************************)
+(* First-pass residual linking for Abstract Speculate PE.               *)
+(***********************************************************************)
+
+module StageT = Abstract_speculate_stage_types
+module Stage2 = Abstract_speculate_stage2_input
+module MetaSparse = Abstract_speculate_meta_sparse
+module Residual = Abstract_speculate_residual_value
+
+let schema_version = "abstract-speculate-residual-linking-pe/v1"
+
+let sort_strings xs = List.sort_uniq String.compare xs
+let sort_json xs = List.sort (fun a b -> compare (Yojson.Safe.to_string a) (Yojson.Safe.to_string b)) xs
+let member = Yojson.Safe.Util.member
+let to_string = Yojson.Safe.Util.to_string
+
+let comma_join xs =
+  let rec loop acc = function
+    | [] -> acc
+    | x :: rest -> loop (acc ^ "," ^ x) rest
+  in
+  match xs with
+  | [] -> ""
+  | x :: rest -> loop x rest
+
+let assoc_field name = function
+  | `Assoc fields -> List.assoc_opt name fields
+  | _ -> None
+
+let string_field name json = match assoc_field name json with Some (`String s) -> Some s | _ -> None
+let bool_field name json = match assoc_field name json with Some (`Bool b) -> Some b | _ -> None
+let list_field name json = match assoc_field name json with Some (`List xs) -> xs | _ -> []
+
+let forbidden_global_entry = "Real_sparrow_frontend." ^ "global_for_" ^ "files"
+let forbidden_merge_entry = "Mergecil." ^ "merge"
+
+type declaration = {
+  name : string;
+  kind : string;
+  source : string;
+}
+
+type module_bundle = {
+  result : MetaSparse.stage1_result;
+  artifact_path : string;
+  declared_imports : declaration list;
+  declared_exports : declaration list;
+  module_boundary_validated : bool;
+}
+
+type linked_stage2_input = (string * StageT.stage2_input) list
+
+type semantic_export = {
+  export_name : string;
+  provider_module : string;
+  provider_source_hash : string;
+  provider_artifact_path : string;
+  return_node : string;
+  return_location : string;
+  return_value : int;
+  abstract_return_value : string;
+  provider_row : Yojson.Safe.t;
+  provider_phase_index : int;
+}
+
+type linked_environment_entry = {
+  import_name : string;
+  importer_module : string;
+  importer_source_hash : string;
+  importer_extern_root : string;
+  provider_module : string;
+  export_name : string;
+  linked_return_value : int;
+  semantic_export : semantic_export;
+}
+
+type phase_event = {
+  phase_index : int;
+  module_id : string;
+  event : string;
+}
+
+type linked_stage2_output = {
+  final_input_table : Yojson.Safe.t list;
+  final_output_table : Yojson.Safe.t list;
+  execution_log : Yojson.Safe.t;
+  shape_witnesses : Yojson.Safe.t list;
+  semantic_exports : semantic_export list;
+  linked_environment : linked_environment_entry list;
+  linked_stage2_input_derivation : Yojson.Safe.t list;
+  phase_log : phase_event list;
+  linked_residual_analyzer_evidence : linked_run_evidence;
+}
+
+and linked_run_evidence = {
+  linked_execute_returned : bool;
+  module_count : int;
+  module_analyzers_executed : int;
+  module_identity_set_matches : bool;
+  all_modules_executed : bool;
+  final_input_row_count : int;
+  final_output_row_count : int;
+  linked_residual_row_count : int;
+  residual_rows_observed : bool;
+  matched_obligation_count : int;
+  unresolved_obligation_count : int;
+  obligations_closed : bool;
+  no_shortcut_path : bool;
+  derived_from_five_predicates : bool;
+  linked_residual_analyzer_ran : bool;
+}
+
+type linked_residual_analyzer = {
+  linked_id : string;
+  modules : module_bundle list;
+  run : linked_stage2_input -> linked_stage2_output;
+}
+
+let declaration_to_json d =
+  `Assoc [
+    "name", `String d.name;
+    "kind", `String d.kind;
+    "source", `String d.source;
+  ]
+
+let phase_event_to_json (event : phase_event) =
+  `Assoc [
+    "phase_index", `Int event.phase_index;
+    "module_id", `String event.module_id;
+    "event", `String event.event;
+  ]
+
+let semantic_export_to_json (export : semantic_export) =
+  `Assoc [
+    "export_name", `String export.export_name;
+    "provider_module", `String export.provider_module;
+    "provider_source_hash", `String export.provider_source_hash;
+    "provider_artifact_path", `String export.provider_artifact_path;
+    "return_node", `String export.return_node;
+    "return_location", `String export.return_location;
+    "return_value", `Int export.return_value;
+    "abstract_return_value", `String export.abstract_return_value;
+    "derivation_source", `String "provider-stage2-output";
+    "provider_phase_index", `Int export.provider_phase_index;
+    "provider_row", export.provider_row;
+  ]
+
+let linked_environment_entry_to_json (entry : linked_environment_entry) =
+  `Assoc [
+    "import_name", `String entry.import_name;
+    "importer_module", `String entry.importer_module;
+    "importer_source_hash", `String entry.importer_source_hash;
+    "importer_extern_root", `String entry.importer_extern_root;
+    "provider_module", `String entry.provider_module;
+    "export_name", `String entry.export_name;
+    "linked_return_value", `Int entry.linked_return_value;
+    "derivation_source", `String "provider-stage2-output";
+    "semantic_export", semantic_export_to_json entry.semantic_export;
+  ]
+
+let declaration_key d = d.kind ^ ":" ^ d.name
+
+let unique_declarations decls =
+  decls
+  |> List.sort (fun a b -> compare (declaration_key a) (declaration_key b))
+  |> List.fold_left (fun acc decl ->
+       match acc with
+       | hd :: _ when declaration_key hd = declaration_key decl -> acc
+       | _ -> decl :: acc)
+       []
+  |> List.rev
+
+let declaration_name_set decls = decls |> List.map (fun d -> d.name) |> sort_strings
+let has_name names name = List.exists ((=) name) names
+
+let declaration_kind_of_varinfo vi =
+  match vi.Sparrow_cil.vtype with
+  | Sparrow_cil.TFun _ -> "function"
+  | _ -> "global"
+
+let declarations_from_global global =
+  let definitions = ref [] in
+  let declarations = ref [] in
+  Sparrow_cil.iterGlobals global.Global.file (function
+    | Sparrow_cil.GFun (fd, _) ->
+        definitions := {
+          name = fd.Sparrow_cil.svar.Sparrow_cil.vname;
+          kind = "function";
+          source = "cil-function-definition";
+        } :: !definitions
+    | Sparrow_cil.GVar (vi, _, _) ->
+        definitions := {
+          name = vi.Sparrow_cil.vname;
+          kind = declaration_kind_of_varinfo vi;
+          source = "cil-global-definition";
+        } :: !definitions
+    | Sparrow_cil.GVarDecl (vi, _) ->
+        declarations := {
+          name = vi.Sparrow_cil.vname;
+          kind = declaration_kind_of_varinfo vi;
+          source = "cil-declaration-or-extern-root";
+        } :: !declarations
+    | _ -> ());
+  let exports = unique_declarations !definitions in
+  let export_names = declaration_name_set exports in
+  let imports =
+    !declarations
+    |> unique_declarations
+    |> List.filter (fun d -> not (has_name export_names d.name))
+  in
+  imports, exports
+
+let declarations_for_result result = declarations_from_global result.MetaSparse.before
+
+let input_module_json bundle =
+  `Assoc [
+    "module_id", `String bundle.result.MetaSparse.module_id;
+    "source_file", `String bundle.result.source;
+    "source_hash", `String bundle.result.source_hash;
+    "artifact_path", `String bundle.artifact_path;
+    "stage2_input_key", `String (bundle.result.module_id ^ ":" ^ bundle.result.source_hash);
+    "module_local_prelink", `Bool true;
+    "typed_analyzer_present", `Bool true;
+    "module_boundary_validated", `Bool bundle.module_boundary_validated;
+  ]
+
+let validate_module_artifact artifact =
+  let boundary = member "module_boundary" artifact in
+  let forbidden = list_field "forbidden_prelink_entrypoints" boundary |> List.map to_string in
+  string_field "scope" artifact = Some "module-only-pre-link" &&
+  bool_field "linked_entrypoints_used" boundary = Some false &&
+  List.mem forbidden_global_entry forbidden &&
+  List.mem forbidden_merge_entry forbidden
+
+let make_bundle ~artifact_path result artifact =
+  if not (validate_module_artifact artifact) then
+    failwith ("module artifact is not a valid module-local pre-link AS artifact: " ^ artifact_path);
+  let declared_imports, declared_exports = declarations_for_result result in
+  {
+    result;
+    artifact_path;
+    declared_imports;
+    declared_exports;
+    module_boundary_validated = true;
+  }
+
+let stage2_input_for_bundle bundle =
+  bundle.result.module_id, bundle.result.stage2_input
+
+let matched_obligations modules =
+  modules
+  |> List.concat_map (fun importer ->
+       importer.declared_imports
+       |> List.concat_map (fun import_decl ->
+            modules
+            |> List.filter (fun exporter -> exporter.result.module_id <> importer.result.module_id)
+            |> List.concat_map (fun exporter ->
+                 exporter.declared_exports
+                 |> List.filter (fun export_decl -> export_decl.name = import_decl.name)
+                 |> List.map (fun export_decl ->
+                      `Assoc [
+                        "name", `String import_decl.name;
+                        "kind", `String import_decl.kind;
+                        "importer_module", `String importer.result.module_id;
+                        "exporter_module", `String exporter.result.module_id;
+                        "import_source", `String import_decl.source;
+                        "export_source", `String export_decl.source;
+                        "match_kind", `String "parsed-cil-declaration-to-definition";
+                      ]))))
+  |> sort_json
+
+let unresolved_obligations modules =
+  modules
+  |> List.concat_map (fun importer ->
+       importer.declared_imports
+       |> List.filter_map (fun import_decl ->
+            let matched =
+              modules
+              |> List.exists (fun exporter ->
+                   exporter.result.module_id <> importer.result.module_id &&
+                   List.exists (fun export_decl -> export_decl.name = import_decl.name) exporter.declared_exports)
+            in
+            if matched then None
+            else Some (`Assoc [
+              "name", `String import_decl.name;
+              "kind", `String import_decl.kind;
+              "importer_module", `String importer.result.module_id;
+              "import_source", `String import_decl.source;
+              "reason", `String "no-linked-module-definition";
+            ])))
+  |> sort_json
+
+let namespace_row module_id row =
+  match row with
+  | `Assoc fields -> `Assoc (("linked_module_id", `String module_id) :: fields)
+  | other -> `Assoc ["linked_module_id", `String module_id; "row", other]
+
+let input_for_module module_id default inputs =
+  match List.assoc_opt module_id inputs with
+  | Some input -> input
+  | None -> default
+
+let extern_roots_of_input (input : StageT.stage2_input) =
+  match assoc_field "extern_roots" input.extern_effects with
+  | Some (`List roots) -> roots |> List.map to_string |> sort_strings
+  | _ -> []
+
+let module_key bundle = bundle.result.module_id ^ ":" ^ bundle.result.source_hash
+
+let unique_string_set xs = List.sort_uniq String.compare xs
+
+let has_duplicates xs = List.length xs <> List.length (unique_string_set xs)
+
+let same_unique_string_set left right =
+  unique_string_set left = unique_string_set right
+
+let int_of_trimmed s =
+  try Some (int_of_string (String.trim s)) with Failure _ -> None
+
+let parse_singleton_interval_value value =
+  let value = String.trim value in
+  match int_of_trimmed value with
+  | Some n -> Some n
+  | None ->
+      let prefix = "([" in
+      let prefix_len = String.length prefix in
+      if String.length value <= prefix_len || String.sub value 0 prefix_len <> prefix then None
+      else
+        try
+          let comma = String.index_from value prefix_len ',' in
+          let close = String.index_from value (comma + 1) ']' in
+          match
+            int_of_trimmed (String.sub value prefix_len (comma - prefix_len)),
+            int_of_trimmed (String.sub value (comma + 1) (close - comma - 1))
+          with
+          | Some lo, Some hi when lo = hi -> Some lo
+          | _ -> None
+        with Not_found -> None
+
+let row_node row = match string_field "node" row with Some s -> s | None -> ""
+
+let row_memory row =
+  match assoc_field "memory" row with
+  | Some (`List memory) -> memory
+  | _ -> []
+
+let cell_location cell = match string_field "location" cell with Some s -> s | None -> ""
+let cell_value cell = match string_field "value" cell with Some s -> s | None -> ""
+
+let return_location name = "(" ^ name ^ ",__return__)"
+
+let find_return_row ~export_name rows =
+  let location = return_location export_name in
+  let candidates =
+    rows
+    |> List.filter_map (fun row ->
+         row_memory row
+         |> List.find_map (fun cell ->
+              if cell_location cell = location then
+                (match parse_singleton_interval_value (cell_value cell) with
+                 | Some value -> Some (row, cell_value cell, value)
+                 | None -> None)
+              else None))
+  in
+  let prefer_exit =
+    candidates
+    |> List.find_opt (fun (row, _, _) -> row_node row = export_name ^ "-EXIT")
+  in
+  match prefer_exit, candidates with
+  | Some candidate, _ -> Some candidate
+  | None, [candidate] -> Some candidate
+  | None, _ :: _ ->
+      failwith ("ambiguous provider return summary rows for " ^ export_name)
+  | None, [] -> None
+
+let matching_export_names modules =
+  modules
+  |> List.concat_map (fun importer ->
+       importer.declared_imports
+       |> List.concat_map (fun import_decl ->
+            modules
+            |> List.filter (fun exporter -> exporter.result.module_id <> importer.result.module_id)
+            |> List.concat_map (fun exporter ->
+                 exporter.declared_exports
+                 |> List.filter_map (fun export_decl ->
+                      if export_decl.name = import_decl.name then
+                        Some (importer, exporter, import_decl, export_decl)
+                      else None))))
+
+let ensure_supported_link_shape matches =
+  let duplicate_export_bindings =
+    matches
+    |> List.map (fun (_, exporter, _, export_decl) -> export_decl.name ^ ":" ^ exporter.result.module_id)
+  in
+  let ambiguous_import_bindings =
+    matches
+    |> List.map (fun (importer, _, import_decl, _) -> importer.result.module_id ^ ":" ^ import_decl.name)
+  in
+  let import_modules = matches |> List.map (fun (importer, _, _, _) -> importer.result.module_id) |> unique_string_set in
+  let export_modules = matches |> List.map (fun (_, exporter, _, _) -> exporter.result.module_id) |> unique_string_set in
+  let mixed_modules = List.filter (fun module_id -> List.mem module_id export_modules) import_modules in
+  if has_duplicates duplicate_export_bindings || has_duplicates ambiguous_import_bindings then
+    failwith "unsupported ambiguous semantic export mapping";
+  if mixed_modules <> [] then
+    failwith ("unsupported mixed importer/provider residual-linking role: " ^ comma_join mixed_modules)
+
+let extract_semantic_exports matches provider_outputs : semantic_export list =
+  matches
+  |> List.map (fun (_, provider, _, export_decl) ->
+       let provider_output =
+         match
+           provider_outputs
+           |> List.find_opt (fun (bundle, _) ->
+                bundle.result.module_id = provider.result.module_id)
+         with
+         | Some (_, output) -> output
+         | None -> failwith ("missing provider stage2 output: " ^ provider.result.module_id)
+       in
+       match find_return_row ~export_name:export_decl.name provider_output.StageT.final_output_table with
+       | Some (row, abstract_return_value, return_value) ->
+           {
+             export_name = export_decl.name;
+             provider_module = provider.result.module_id;
+             provider_source_hash = provider.result.source_hash;
+             provider_artifact_path = provider.artifact_path;
+             return_node = row_node row;
+             return_location = return_location export_decl.name;
+             return_value;
+             abstract_return_value;
+             provider_row = row;
+             provider_phase_index = 1;
+           }
+       | None ->
+           failwith ("provider stage2 output has no singleton return summary for " ^ export_decl.name))
+
+let linked_environment_for_matches matches (semantic_exports : semantic_export list) : linked_environment_entry list =
+  matches
+  |> List.map (fun (importer, provider, import_decl, export_decl) ->
+       let extern_roots = extern_roots_of_input importer.result.stage2_input in
+       begin match extern_roots with
+       | [extern_root] ->
+           let semantic_export : semantic_export =
+             match
+               semantic_exports
+               |> List.find_opt (fun (export : semantic_export) ->
+                    export.provider_module = provider.result.module_id &&
+                    export.export_name = export_decl.name)
+             with
+             | Some export -> export
+             | None -> failwith ("missing semantic export for " ^ export_decl.name)
+           in
+           {
+             import_name = import_decl.name;
+             importer_module = importer.result.module_id;
+             importer_source_hash = importer.result.source_hash;
+             importer_extern_root = extern_root;
+             provider_module = provider.result.module_id;
+             export_name = export_decl.name;
+             linked_return_value = semantic_export.return_value;
+             semantic_export;
+           }
+       | [] ->
+           failwith ("importer has no extern roots for linked obligation: " ^ importer.result.module_id)
+       | roots ->
+           failwith ("unsupported multiple extern roots for linked importer " ^
+                     importer.result.module_id ^ ": " ^ comma_join roots)
+       end)
+
+let linked_stage2_input_for_importer importer linked_environment =
+  let entries =
+    linked_environment
+    |> List.filter (fun entry -> entry.importer_module = importer.result.module_id)
+  in
+  let linked_effects =
+    entries
+    |> List.map (fun entry ->
+         entry.importer_extern_root,
+         (entry.linked_return_value,
+          `Assoc [
+            "provider_module", `String entry.provider_module;
+            "provider_source_hash", `String entry.semantic_export.provider_source_hash;
+            "provider_artifact_path", `String entry.semantic_export.provider_artifact_path;
+            "export_name", `String entry.export_name;
+            "return_location", `String entry.semantic_export.return_location;
+            "return_node", `String entry.semantic_export.return_node;
+            "abstract_return_value", `String entry.semantic_export.abstract_return_value;
+            "provider_phase_index", `Int entry.semantic_export.provider_phase_index;
+            "derivation_source", `String "provider-stage2-output";
+          ]))
+  in
+  {
+    StageT.extern_effects =
+      Stage2.make_linked_extern_effects
+        ~source:importer.result.source
+        ~hash:importer.result.source_hash
+        ~extern_roots:(extern_roots_of_input importer.result.stage2_input)
+        ~linked_effects;
+  }
+
+let linked_input_derivation_json linked_environment =
+  linked_environment
+  |> List.map (fun entry ->
+       `Assoc [
+         "importer_module", `String entry.importer_module;
+         "importer_extern_root", `String entry.importer_extern_root;
+         "import_name", `String entry.import_name;
+         "provider_module", `String entry.provider_module;
+         "export_name", `String entry.export_name;
+         "linked_return_value", `Int entry.linked_return_value;
+         "effect_reason", `String "linked-provider-return";
+         "stage2_obligation", `String "dynamic external/link fact derived from provider stage2 output";
+         "derivation_source", `String "provider-stage2-output";
+         "semantic_export", semantic_export_to_json entry.semantic_export;
+       ])
+
+let derive_linked_run_evidence
+    ~linked_execute_returned
+    ~modules
+    ~per_module
+    ~final_input_table
+    ~final_output_table
+    ~matched
+    ~unresolved =
+  let module_count = List.length modules in
+  let module_analyzers_executed = List.length per_module in
+  let module_keys = List.map module_key modules in
+  let executed_module_keys = List.map (fun (bundle, _) -> module_key bundle) per_module in
+  let module_identity_set_matches =
+    same_unique_string_set module_keys executed_module_keys &&
+    not (has_duplicates module_keys) &&
+    not (has_duplicates executed_module_keys)
+  in
+  let all_modules_executed =
+    module_analyzers_executed = module_count && module_identity_set_matches
+  in
+  let final_input_row_count = List.length final_input_table in
+  let final_output_row_count = List.length final_output_table in
+  let linked_residual_row_count = final_input_row_count + final_output_row_count in
+  let residual_rows_observed = linked_residual_row_count > 0 in
+  let matched_obligation_count = List.length matched in
+  let unresolved_obligation_count = List.length unresolved in
+  let obligations_closed = matched_obligation_count > 0 && unresolved_obligation_count = 0 in
+  let no_shortcut_path =
+    List.length modules >= 2 &&
+    List.for_all (fun bundle -> bundle.module_boundary_validated) modules
+  in
+  let derived_from_five_predicates = true in
+  let linked_residual_analyzer_ran =
+    linked_execute_returned &&
+    all_modules_executed &&
+    residual_rows_observed &&
+    obligations_closed &&
+    no_shortcut_path
+  in
+  {
+    linked_execute_returned;
+    module_count;
+    module_analyzers_executed;
+    module_identity_set_matches;
+    all_modules_executed;
+    final_input_row_count;
+    final_output_row_count;
+    linked_residual_row_count;
+    residual_rows_observed;
+    matched_obligation_count;
+    unresolved_obligation_count;
+    obligations_closed;
+    no_shortcut_path;
+    derived_from_five_predicates;
+    linked_residual_analyzer_ran;
+  }
+
+let linked_run_evidence_to_json evidence =
+  `Assoc [
+    "linked_execute_returned", `Bool evidence.linked_execute_returned;
+    "module_count", `Int evidence.module_count;
+    "module_analyzers_executed", `Int evidence.module_analyzers_executed;
+    "module_identity_set_matches", `Bool evidence.module_identity_set_matches;
+    "all_modules_executed", `Bool evidence.all_modules_executed;
+    "final_input_row_count", `Int evidence.final_input_row_count;
+    "final_output_row_count", `Int evidence.final_output_row_count;
+    "linked_residual_row_count", `Int evidence.linked_residual_row_count;
+    "residual_rows_observed", `Bool evidence.residual_rows_observed;
+    "matched_obligation_count", `Int evidence.matched_obligation_count;
+    "unresolved_obligation_count", `Int evidence.unresolved_obligation_count;
+    "obligations_closed", `Bool evidence.obligations_closed;
+    "no_shortcut_path", `Bool evidence.no_shortcut_path;
+    "derived_from_five_predicates", `Bool evidence.derived_from_five_predicates;
+    "linked_residual_analyzer_ran", `Bool evidence.linked_residual_analyzer_ran;
+  ]
+
+let execute_modules modules inputs =
+  let matches = matching_export_names modules in
+  ensure_supported_link_shape matches;
+  let provider_ids =
+    matches |> List.map (fun (_, provider, _, _) -> provider.result.module_id) |> unique_string_set
+  in
+  let importer_ids =
+    matches |> List.map (fun (importer, _, _, _) -> importer.result.module_id) |> unique_string_set
+  in
+  let is_provider bundle = List.mem bundle.result.module_id provider_ids in
+  let is_importer bundle = List.mem bundle.result.module_id importer_ids in
+  let providers, non_providers = List.partition is_provider modules in
+  let importers, neutral_modules = List.partition is_importer non_providers in
+  let phase_event phase_index module_id event = { phase_index; module_id; event } in
+  let provider_per_module =
+    providers
+    |> List.map (fun bundle ->
+         let module_id = bundle.result.module_id in
+         let input = input_for_module module_id bundle.result.stage2_input inputs in
+         let output : StageT.stage2_output = Residual.execute bundle.result.analyzer input in
+         bundle, output)
+  in
+  let semantic_exports = extract_semantic_exports matches provider_per_module in
+  let linked_environment = linked_environment_for_matches matches semantic_exports in
+  let importer_per_module =
+    importers
+    |> List.map (fun bundle ->
+         let input = linked_stage2_input_for_importer bundle linked_environment in
+         let output : StageT.stage2_output = Residual.execute bundle.result.analyzer input in
+         bundle, output)
+  in
+  let neutral_per_module =
+    neutral_modules
+    |> List.map (fun bundle ->
+         let module_id = bundle.result.module_id in
+         let input = input_for_module module_id bundle.result.stage2_input inputs in
+         let output : StageT.stage2_output = Residual.execute bundle.result.analyzer input in
+         bundle, output)
+  in
+  let per_module = provider_per_module @ importer_per_module @ neutral_per_module in
+  let phase_log =
+    (provider_per_module
+     |> List.map (fun (bundle, _) ->
+          phase_event 1 bundle.result.module_id "provider-stage2-executed"))
+    @
+    (semantic_exports
+     |> List.map (fun (export : semantic_export) ->
+          phase_event 2 export.provider_module ("semantic-export-derived:" ^ export.export_name)))
+    @
+    (linked_environment
+     |> List.map (fun entry ->
+          phase_event 3 entry.importer_module ("linked-environment-bound:" ^ entry.import_name)))
+    @
+    (importer_per_module
+     |> List.map (fun (bundle, _) ->
+          phase_event 4 bundle.result.module_id "importer-stage2-executed-with-linked-environment"))
+    @
+    (neutral_per_module
+     |> List.map (fun (bundle, _) ->
+          phase_event 5 bundle.result.module_id "neutral-stage2-executed"))
+  in
+  let final_input_table =
+    per_module
+    |> List.concat_map (fun (bundle, output) ->
+         output.StageT.final_input_table |> List.map (namespace_row bundle.result.module_id))
+    |> sort_json
+  in
+  let final_output_table =
+    per_module
+    |> List.concat_map (fun (bundle, output) ->
+         output.StageT.final_output_table |> List.map (namespace_row bundle.result.module_id))
+    |> sort_json
+  in
+  let shape_witnesses =
+    per_module
+    |> List.concat_map (fun (bundle, (output : StageT.stage2_output)) ->
+         output.StageT.shape_witnesses |> List.map (fun witness ->
+           `Assoc ["linked_module_id", `String bundle.result.module_id; "witness", witness]))
+    |> sort_json
+  in
+  let matched = matched_obligations modules in
+  let unresolved = unresolved_obligations modules in
+  let linked_residual_analyzer_evidence =
+    derive_linked_run_evidence
+      ~linked_execute_returned:true
+      ~modules
+      ~per_module
+      ~final_input_table
+      ~final_output_table
+      ~matched
+      ~unresolved
+  in
+  let module_logs =
+    per_module
+    |> List.map (fun (bundle, output) ->
+         let dispatch = if is_importer bundle then "linked-environment" else "per-module" in
+         `Assoc [
+           "module_id", `String bundle.result.module_id;
+           "source_hash", `String bundle.result.source_hash;
+           "stage2_input_dispatch", `String dispatch;
+           "module_analyzer_executed", `Bool true;
+           "final_input_row_count", `Int (List.length output.StageT.final_input_table);
+           "final_output_row_count", `Int (List.length output.StageT.final_output_table);
+           "execution_log", output.StageT.execution_log;
+         ])
+    |> sort_json
+  in
+  {
+    final_input_table;
+    final_output_table;
+    shape_witnesses;
+    semantic_exports;
+    linked_environment;
+    linked_stage2_input_derivation = linked_input_derivation_json linked_environment;
+    phase_log;
+    linked_residual_analyzer_evidence;
+    execution_log = `Assoc [
+      "schema_version", `String schema_version;
+      "linked_residual_analyzer_ran", `Bool linked_residual_analyzer_evidence.linked_residual_analyzer_ran;
+      "linked_residual_analyzer_evidence", linked_run_evidence_to_json linked_residual_analyzer_evidence;
+      "residual_linking_performed", `Bool true;
+      "module_count", `Int (List.length modules);
+      "module_analyzers_executed", `Int (List.length per_module);
+      "module_identity_set_matches", `Bool linked_residual_analyzer_evidence.module_identity_set_matches;
+      "per_module_stage2_inputs_used", `Bool true;
+      "provider_derived_importer_inputs_used", `Bool (linked_environment <> []);
+      "semantic_exports", `List (List.map semantic_export_to_json semantic_exports);
+      "linked_environment", `List (List.map linked_environment_entry_to_json linked_environment);
+      "linked_stage2_input_derivation", `List (linked_input_derivation_json linked_environment);
+      "phase_log", `List (List.map phase_event_to_json phase_log);
+      "namespacing_strategy", `String "linked_module_id-prefix";
+      "linked_residual_row_count", `Int linked_residual_analyzer_evidence.linked_residual_row_count;
+      "residual_rows_observed", `Bool linked_residual_analyzer_evidence.residual_rows_observed;
+      "matched_obligation_count", `Int (List.length matched);
+      "unresolved_obligation_count", `Int (List.length unresolved);
+      "obligations_closed", `Bool linked_residual_analyzer_evidence.obligations_closed;
+      "no_shortcut_path", `Bool linked_residual_analyzer_evidence.no_shortcut_path;
+      "matched_obligations", `List matched;
+      "unresolved_obligations", `List unresolved;
+      "module_logs", `List module_logs;
+      "non_equivalence_claim", `String "first-pass residual linkability only; not whole-program semantic equivalence";
+    ];
+  }
+
+let make_analyzer ~linked_id modules =
+  if List.length modules < 2 then failwith "residual linking requires at least two module bundles";
+  {
+    linked_id;
+    modules;
+    run = execute_modules modules;
+  }
+
+let execute analyzer inputs = analyzer.run inputs
+
+let output_to_json output =
+  `Assoc [
+    "final_input_table", `List output.final_input_table;
+    "final_output_table", `List output.final_output_table;
+    "shape_witnesses", `List output.shape_witnesses;
+    "semantic_exports", `List (List.map semantic_export_to_json output.semantic_exports);
+    "linked_environment", `List (List.map linked_environment_entry_to_json output.linked_environment);
+    "linked_stage2_input_derivation", `List output.linked_stage2_input_derivation;
+    "phase_log", `List (List.map phase_event_to_json output.phase_log);
+    "linked_residual_analyzer_evidence", linked_run_evidence_to_json output.linked_residual_analyzer_evidence;
+    "execution_log", output.execution_log;
+  ]
+
+let artifact_json ~doc_path analyzer output =
+  let modules = analyzer.modules in
+  let matched = matched_obligations modules in
+  let unresolved = unresolved_obligations modules in
+  `Assoc [
+    "schema_version", `String schema_version;
+    "artifact_kind", `String "abstract-speculate-linked-residual-analyzer";
+    "linked_id", `String analyzer.linked_id;
+    "claim", `String "PE(I,m1), PE(I,m2), ... -> residual linking -> linked residual analyzer";
+    "validation_oracle", `String "typed bundle execution plus parsed-CIL structural obligation matching";
+    "input_modules", `List (List.map input_module_json modules);
+    "module_count", `Int (List.length modules);
+    "declared_imports", `List (modules |> List.concat_map (fun bundle ->
+      bundle.declared_imports |> List.map (fun d ->
+        `Assoc ["module_id", `String bundle.result.module_id; "declaration", declaration_to_json d])) |> sort_json);
+    "declared_exports", `List (modules |> List.concat_map (fun bundle ->
+      bundle.declared_exports |> List.map (fun d ->
+        `Assoc ["module_id", `String bundle.result.module_id; "declaration", declaration_to_json d])) |> sort_json);
+    "matched_obligations", `List matched;
+    "unresolved_obligations", `List unresolved;
+    "linked_stage2_input", `Assoc [
+      "dispatch", `String "provider-derived-linked-environment";
+      "keys", `List (modules |> List.map (fun bundle -> `String (bundle.result.module_id ^ ":" ^ bundle.result.source_hash)));
+      "derivation_source", `String "provider-stage2-output";
+      "linked_environment_generated", `Bool (output.linked_environment <> []);
+    ];
+    "semantic_exports", `List (List.map semantic_export_to_json output.semantic_exports);
+    "linked_environment", `List (List.map linked_environment_entry_to_json output.linked_environment);
+    "linked_stage2_input_derivation", `List output.linked_stage2_input_derivation;
+    "phase_log", `List (List.map phase_event_to_json output.phase_log);
+    "linked_output", output_to_json output;
+    "residual_linking_performed", `Bool true;
+    "linked_residual_analyzer_ran", `Bool output.linked_residual_analyzer_evidence.linked_residual_analyzer_ran;
+    "linked_residual_analyzer_evidence", linked_run_evidence_to_json output.linked_residual_analyzer_evidence;
+    "per_module_stage2_inputs_used", `Bool true;
+    "provider_derived_importer_inputs_used", `Bool (output.linked_environment <> []);
+    "module_local_prelink", `Bool true;
+    "linked_entrypoints_used_before_pe", `Bool false;
+    "linked_facts_prelink", `Bool false;
+    "metadata_only_proof", `Bool false;
+    "json_is_summary_only", `Bool false;
+    "namespacing_strategy", `String "linked_module_id-prefix";
+    "forbidden_prelink_entrypoints", `List [`String forbidden_global_entry; `String forbidden_merge_entry];
+    "doc_path", `String doc_path;
+    "non_claims", `List [
+      `String "no full whole-program semantic equivalence proof";
+      `String "no multi-file frontend merge before PE";
+      `String "no final residual-linker API freeze";
+    ];
+  ]
+
+let write_artifact ~path ~doc_path analyzer output =
+  Real_sparrow_artifact.write_json path (artifact_json ~doc_path analyzer output)

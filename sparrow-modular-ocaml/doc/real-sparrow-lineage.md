@@ -133,10 +133,10 @@ Source anchors:
 
 Non-claims: no Worklist-only product boundary, no standalone interval-analysis PE pipeline, no reusable interval-domain specializer, no octDom integration, no PartialFlowSensitivity staging/ranking parity, no whole-program merge equivalence, no executable residual linker, no residual global-fixpoint runtime, and no strict StepManager label parity requirement.
 
-## Staged linking PE lineage extension
+## Premerge linked observer lineage extension
 
-The staged-linking milestone extends the accepted module-only sparse boundary to
-linked multi-file inputs:
+The premerge linked observer lane intentionally leaves the module-only sparse
+boundary and observes linked multi-file inputs:
 
 ```ocaml
 Frontend.parse / Mergecil.merge
@@ -154,13 +154,13 @@ Active anchors:
 - `src/real_sparrow_frontend.ml` — `global_for_files` uses the existing real
   multi-file parser and sets `Mergecil.ignore_merge_conflicts := true` for
   baseline-compatible linked merge behavior.
-- `src/real_sparrow_staged_linking_pe.ml` — linked ItvDom sparse final-table
+- `src/real_sparrow_premerge_linked_observer.ml` — linked ItvDom sparse final-table
   artifacts, extern-only BTA, and standalone executable residual recomposition.
-- `sparrow/test/real_staged_linking_observer.ml` — frozen, non-semantic observer
+- `sparrow/test/real_staged_linking_observer.ml` — frozen observer with legacy upstream filename; used only as premerge linked reference output
   for linked final-table parity.
 
-This supersedes only the predecessor non-claims about whole-program merge for
-the new linked alias.  Predecessor module-only aliases and their schemas remain
+This is a contrast/reference lane only; it does not supersede Abstract
+Speculate module-local PE or post-PE residual-linking claims.  Predecessor module-only aliases and their schemas remain
 unchanged and still make no executable residual linker or residual global-fixpoint
 claim.  Still out of scope: Alarm/Report PE, PFS staging/ranking,
 octDom/domain-generic PE, and any baseline `sparrow/src` semantic edit.

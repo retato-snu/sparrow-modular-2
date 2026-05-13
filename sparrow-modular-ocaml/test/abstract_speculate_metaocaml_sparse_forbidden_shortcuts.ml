@@ -39,6 +39,7 @@ let implementation_paths () =
       "abstract_speculate_residual_value.ml";
       "abstract_speculate_stage2_input.ml";
       "abstract_speculate_stage_types.ml";
+      "abstract_speculate_residual_linker.ml";
       "abstract_speculate_lift.ml";
       "abstract_speculate_blind_equal.ml";
     ] in
@@ -111,6 +112,8 @@ let () =
        let impl_source = read_file impl |> strip_report_literal_lines in
        require_absent ~where:impl impl_source [
          "Real_sparrow_sparse_fixpoint_pe.artifact_for_module";
+         "Real_sparrow_premerge_linked_observer";
+         "real_sparrow_premerge_linked_observer";
          "Real_sparrow_frontend.global_for_files";
          "Mergecil.merge";
          "SparseItv.perform";
