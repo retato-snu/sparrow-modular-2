@@ -23,6 +23,13 @@ let comma_join xs =
   | [] -> ""
   | x :: rest -> loop x rest
 
+let contains s sub =
+  let len = String.length s and sub_len = String.length sub in
+  let rec loop i =
+    i + sub_len <= len && (String.sub s i sub_len = sub || loop (i + 1))
+  in
+  sub_len = 0 || loop 0
+
 let assoc_field name = function
   | `Assoc fields -> List.assoc_opt name fields
   | _ -> None
@@ -387,22 +394,20 @@ let matching_export_names modules =
                         Some (importer, exporter, import_decl, export_decl)
                       else None))))
 
+let function_matches matches =
+  matches
+  |> List.filter (fun (_, _, import_decl, export_decl) ->
+       import_decl.kind = "function" && export_decl.kind = "function")
+
 let ensure_supported_link_shape matches =
-  let duplicate_export_bindings =
-    matches
-    |> List.map (fun (_, exporter, _, export_decl) -> export_decl.name ^ ":" ^ exporter.result.module_id)
-  in
   let ambiguous_import_bindings =
     matches
-    |> List.map (fun (importer, _, import_decl, _) -> importer.result.module_id ^ ":" ^ import_decl.name)
+    |> List.map (fun (importer, _, import_decl, _) ->
+         importer.result.module_id ^ ":" ^ import_decl.kind ^ ":" ^ import_decl.name)
   in
-  let import_modules = matches |> List.map (fun (importer, _, _, _) -> importer.result.module_id) |> unique_string_set in
-  let export_modules = matches |> List.map (fun (_, exporter, _, _) -> exporter.result.module_id) |> unique_string_set in
-  let mixed_modules = List.filter (fun module_id -> List.mem module_id export_modules) import_modules in
-  if has_duplicates duplicate_export_bindings || has_duplicates ambiguous_import_bindings then
+  if has_duplicates ambiguous_import_bindings then
     failwith "unsupported ambiguous semantic export mapping";
-  if mixed_modules <> [] then
-    failwith ("unsupported mixed importer/provider residual-linking role: " ^ comma_join mixed_modules)
+  ()
 
 let extract_semantic_exports matches provider_outputs : semantic_export list =
   matches
@@ -433,38 +438,59 @@ let extract_semantic_exports matches provider_outputs : semantic_export list =
        | None ->
            failwith ("provider stage2 output has no singleton return summary for " ^ export_decl.name))
 
+let component_mentions_import import_name component =
+  match assoc_field "semantic_expression" component.StageT.default_component with
+  | Some (`String expression) -> contains expression ("@" ^ import_name)
+  | _ -> false
+
+let extern_root_for_import importer import_decl =
+  let extern_roots = extern_roots_of_input importer.result.stage2_input in
+  let components =
+    importer.result.analyzer.StageT.residual_input_components @
+    importer.result.analyzer.StageT.residual_output_components
+  in
+  let matching_roots =
+    components
+    |> List.filter_map (fun component ->
+         if component_mentions_import import_decl.name component then Some component.StageT.node else None)
+    |> sort_strings
+  in
+  match matching_roots, extern_roots with
+  | [root], _ -> root
+  | [], [root] -> root
+  | [], [] ->
+      failwith ("importer has no extern roots for linked obligation: " ^ importer.result.module_id)
+  | [], roots ->
+      failwith ("cannot resolve extern root for import " ^ import_decl.name ^
+                " in " ^ importer.result.module_id ^ ": " ^ comma_join roots)
+  | roots, _ ->
+      failwith ("ambiguous extern roots for import " ^ import_decl.name ^
+                " in " ^ importer.result.module_id ^ ": " ^ comma_join roots)
+
 let linked_environment_for_matches matches (semantic_exports : semantic_export list) : linked_environment_entry list =
   matches
   |> List.map (fun (importer, provider, import_decl, export_decl) ->
-       let extern_roots = extern_roots_of_input importer.result.stage2_input in
-       begin match extern_roots with
-       | [extern_root] ->
-           let semantic_export : semantic_export =
-             match
-               semantic_exports
-               |> List.find_opt (fun (export : semantic_export) ->
-                    export.provider_module = provider.result.module_id &&
-                    export.export_name = export_decl.name)
-             with
-             | Some export -> export
-             | None -> failwith ("missing semantic export for " ^ export_decl.name)
-           in
-           {
-             import_name = import_decl.name;
-             importer_module = importer.result.module_id;
-             importer_source_hash = importer.result.source_hash;
-             importer_extern_root = extern_root;
-             provider_module = provider.result.module_id;
-             export_name = export_decl.name;
-             linked_return_value = semantic_export.return_value;
-             semantic_export;
-           }
-       | [] ->
-           failwith ("importer has no extern roots for linked obligation: " ^ importer.result.module_id)
-       | roots ->
-           failwith ("unsupported multiple extern roots for linked importer " ^
-                     importer.result.module_id ^ ": " ^ comma_join roots)
-       end)
+       let extern_root = extern_root_for_import importer import_decl in
+       let semantic_export : semantic_export =
+         match
+           semantic_exports
+           |> List.find_opt (fun (export : semantic_export) ->
+                export.provider_module = provider.result.module_id &&
+                export.export_name = export_decl.name)
+         with
+         | Some export -> export
+         | None -> failwith ("missing semantic export for " ^ export_decl.name)
+       in
+       {
+         import_name = import_decl.name;
+         importer_module = importer.result.module_id;
+         importer_source_hash = importer.result.source_hash;
+         importer_extern_root = extern_root;
+         provider_module = provider.result.module_id;
+         export_name = export_decl.name;
+         linked_return_value = semantic_export.return_value;
+         semantic_export;
+       })
 
 let linked_stage2_input_for_importer importer linked_environment =
   let entries =
@@ -592,63 +618,91 @@ let linked_run_evidence_to_json evidence =
 let execute_modules modules inputs =
   let matches = matching_export_names modules in
   ensure_supported_link_shape matches;
-  let provider_ids =
-    matches |> List.map (fun (_, provider, _, _) -> provider.result.module_id) |> unique_string_set
-  in
-  let importer_ids =
-    matches |> List.map (fun (importer, _, _, _) -> importer.result.module_id) |> unique_string_set
-  in
-  let is_provider bundle = List.mem bundle.result.module_id provider_ids in
-  let is_importer bundle = List.mem bundle.result.module_id importer_ids in
-  let providers, non_providers = List.partition is_provider modules in
-  let importers, neutral_modules = List.partition is_importer non_providers in
+  let function_matches = function_matches matches in
   let phase_event phase_index module_id event = { phase_index; module_id; event } in
-  let provider_per_module =
-    providers
-    |> List.map (fun bundle ->
-         let module_id = bundle.result.module_id in
-         let input = input_for_module module_id bundle.result.stage2_input inputs in
-         let output : StageT.stage2_output = Residual.execute bundle.result.analyzer input in
-         bundle, output)
+  let module_has_function_import bundle =
+    function_matches
+    |> List.exists (fun (importer, _, _, _) -> importer.result.module_id = bundle.result.module_id)
   in
-  let semantic_exports = extract_semantic_exports matches provider_per_module in
-  let linked_environment = linked_environment_for_matches matches semantic_exports in
-  let importer_per_module =
-    importers
-    |> List.map (fun bundle ->
-         let input = linked_stage2_input_for_importer bundle linked_environment in
-         let output : StageT.stage2_output = Residual.execute bundle.result.analyzer input in
-         bundle, output)
+  let module_dependencies_satisfied executed_ids bundle =
+    function_matches
+    |> List.for_all (fun (importer, provider, _, _) ->
+         importer.result.module_id <> bundle.result.module_id ||
+         List.mem provider.result.module_id executed_ids)
   in
-  let neutral_per_module =
-    neutral_modules
-    |> List.map (fun bundle ->
-         let module_id = bundle.result.module_id in
-         let input = input_for_module module_id bundle.result.stage2_input inputs in
-         let output : StageT.stage2_output = Residual.execute bundle.result.analyzer input in
-         bundle, output)
+  let module_import_matches bundle =
+    function_matches
+    |> List.filter (fun (importer, _, _, _) -> importer.result.module_id = bundle.result.module_id)
   in
-  let per_module = provider_per_module @ importer_per_module @ neutral_per_module in
-  let phase_log =
-    (provider_per_module
-     |> List.map (fun (bundle, _) ->
-          phase_event 1 bundle.result.module_id "provider-stage2-executed"))
-    @
-    (semantic_exports
-     |> List.map (fun (export : semantic_export) ->
-          phase_event 2 export.provider_module ("semantic-export-derived:" ^ export.export_name)))
-    @
-    (linked_environment
-     |> List.map (fun entry ->
-          phase_event 3 entry.importer_module ("linked-environment-bound:" ^ entry.import_name)))
-    @
-    (importer_per_module
-     |> List.map (fun (bundle, _) ->
-          phase_event 4 bundle.result.module_id "importer-stage2-executed-with-linked-environment"))
-    @
-    (neutral_per_module
-     |> List.map (fun (bundle, _) ->
-          phase_event 5 bundle.result.module_id "neutral-stage2-executed"))
+  let module_export_matches bundle =
+    function_matches
+    |> List.filter (fun (_, provider, _, _) -> provider.result.module_id = bundle.result.module_id)
+  in
+  let rec schedule phase_index remaining executed_ids per_module semantic_exports linked_environment phase_log =
+    match remaining with
+    | [] -> per_module, semantic_exports, linked_environment, phase_log
+    | _ ->
+        let ready, blocked =
+          List.partition (module_dependencies_satisfied executed_ids) remaining
+        in
+        if ready = [] then
+          failwith "unsupported cyclic mixed importer/provider residual-linking topology";
+        let phase_index, executed_ids, per_module, semantic_exports, linked_environment, phase_log =
+          ready
+          |> List.fold_left
+               (fun (phase_index, executed_ids, per_module, semantic_exports, linked_environment, phase_log) bundle ->
+                  let import_matches = module_import_matches bundle in
+                  let export_matches = module_export_matches bundle in
+                  let is_importer = import_matches <> [] in
+                  let is_provider = export_matches <> [] in
+                  let module_id = bundle.result.module_id in
+                  let module_environment =
+                    if is_importer then linked_environment_for_matches import_matches semantic_exports
+                    else []
+                  in
+                  let input =
+                    if is_importer then linked_stage2_input_for_importer bundle module_environment
+                    else input_for_module module_id bundle.result.stage2_input inputs
+                  in
+                  let env_events =
+                    module_environment
+                    |> List.map (fun entry ->
+                         phase_event phase_index entry.importer_module
+                           ("linked-environment-bound:" ^ entry.import_name))
+                  in
+                  let phase_index = phase_index + (if env_events = [] then 0 else 1) in
+                  let output : StageT.stage2_output = Residual.execute bundle.result.analyzer input in
+                  let execution_event =
+                    if is_importer then "importer-stage2-executed-with-linked-environment"
+                    else if is_provider then "provider-stage2-executed"
+                    else "neutral-stage2-executed"
+                  in
+                  let execution_phase = phase_index in
+                  let execution_events = [phase_event execution_phase module_id execution_event] in
+                  let new_exports = extract_semantic_exports export_matches [bundle, output] in
+                  let new_exports =
+                    new_exports
+                    |> List.map (fun export -> { export with provider_phase_index = execution_phase })
+                  in
+                  let export_events =
+                    new_exports
+                    |> List.map (fun (export : semantic_export) ->
+                         phase_event (execution_phase + 1) export.provider_module
+                           ("semantic-export-derived:" ^ export.export_name))
+                  in
+                  let next_phase = execution_phase + 1 + (if export_events = [] then 0 else 1) in
+                  next_phase,
+                  module_id :: executed_ids,
+                  per_module @ [bundle, output],
+                  semantic_exports @ new_exports,
+                  linked_environment @ module_environment,
+                  phase_log @ env_events @ execution_events @ export_events)
+               (phase_index, executed_ids, per_module, semantic_exports, linked_environment, phase_log)
+        in
+        schedule phase_index blocked executed_ids per_module semantic_exports linked_environment phase_log
+  in
+  let per_module, semantic_exports, linked_environment, phase_log =
+    schedule 1 modules [] [] [] [] []
   in
   let final_input_table =
     per_module
@@ -683,8 +737,8 @@ let execute_modules modules inputs =
   in
   let module_logs =
     per_module
-    |> List.map (fun (bundle, output) ->
-         let dispatch = if is_importer bundle then "linked-environment" else "per-module" in
+     |> List.map (fun (bundle, output) ->
+         let dispatch = if module_has_function_import bundle then "linked-environment" else "per-module" in
          `Assoc [
            "module_id", `String bundle.result.module_id;
            "source_hash", `String bundle.result.source_hash;

@@ -77,7 +77,7 @@ The checker recomputes this path from the linked artifact rather than trusting o
 - verifies the importer dynamic extern-call row consumed the same value;
 - verifies phase order: provider execution, semantic export derivation, linked environment binding, importer linked execution.
 
-Unsupported multiplicity or mixed provider/importer roles should fail with diagnostics rather than heuristic linking in this prototype.
+Ambiguous provider choices still fail with diagnostics. Deterministic multiple-import/provider and mixed-role-chain witnesses are handled by the oracle-suite topology scheduler described below.
 
 ## Non-goals
 
@@ -85,8 +85,66 @@ Unsupported multiplicity or mixed provider/importer roles should fail with diagn
 - No broad arbitrary-C coverage.
 - No optimized or production-grade residual linker.
 - No final API freeze for the residual module/linker contract.
-- No memory/global/call-effect summary consumption beyond the return value and provenance needed for this witness.
+- No final general memory/global/call-effect summary language; richer effect observations in the oracle suite remain witness-bounded prototype evidence.
 
 ## Contrast with real premerge linked observer
 
 `real_sparrow_premerge_linked_observer` intentionally validates a different evidence track: it starts from a linked whole-program fixture and uses `global_for_files` / frontend merge before analysis. This experiment keeps that path as contrast only; Abstract Speculate residual linking must prove post-PE linkability from module-local residual analyzers.
+
+## Semantic preservation proof-obligation oracle suite
+
+The follow-up alias `@abstract_speculate_residual_linking_oracle_suite` extends the first return-only witness into an executable, witness-bounded proof-obligation suite.  The suite still preserves the core residual-linking boundary:
+
+```text
+PE(I, m1), PE(I, m2), ... -> residual linking -> linked residual analyzer
+```
+
+For each witness, the suite emits two artifact families:
+
+1. residual-linked artifacts from module-local Abstract Speculate PE outputs; and
+2. a premerge linked observer artifact used only as an oracle/reference.
+
+The premerge observer is not called from `Abstract_speculate_residual_linker`; the suite checker scans the residual-linker source and residual-linking dump path for the forbidden premerge/global shortcuts and records the premerge artifacts only under oracle/reference fields.
+
+### Witness categories
+
+The oracle suite uses small C programs parsed by the current frontend:
+
+- `global_write_read`: provider writes `shared_g`; importer reads/depends on the linked global observation.
+- `pointer_memory_effect`: provider mutates through `int *p`; the suite records pointer alias/effect provenance and compares it with the oracle return/effect evidence.
+- `multiple_providers_imports`: one importer links to two deterministic providers.
+- `mixed_role_chain`: a middle module imports from one provider and exports a summary consumed by a downstream importer; this first oracle obligation proves scheduling/order and summary handoff, not upstream value-dependence through the middle summary.
+
+Provider-side module-local fixtures keep small `main` shims because the module-local Abstract Speculate path currently expects each module to parse independently with a main entry.  The premerge oracle fixtures omit those provider `main` shims so the whole-program linked observer has a single program entry.
+
+### Proof relation contract
+
+The suite report is explicitly `prototype-non-public`.  Positive witnesses must include:
+
+- residual linked artifact path;
+- premerge observer artifact path;
+- normalized residual and oracle observations;
+- relation result for residual-to-oracle and oracle-to-residual selected observations;
+- row/effect provenance into both artifact families;
+- named obligations with pass/fail status.
+
+The equivalence statement is witness-bounded and selected-observation-bounded.  The checker allows documented normalization for interval-compatible globals and pointer alias provenance; it does not claim arbitrary-C semantic equivalence.
+
+### Named obligations
+
+The suite-level report includes these obligations:
+
+- `return_value_matches_oracle`;
+- `global_write_read_matches_oracle`;
+- `pointer_memory_effect_matches_oracle`;
+- `provider_resolution_matches_oracle`;
+- `mixed_role_chain_matches_oracle`;
+- `no_premerge_implementation_shortcut`.
+
+Negative-case coverage is represented in the report for mismatched values/effects, missing global/pointer observations, ambiguous providers, invalid mixed-role propagation, shortcut leakage, missing oracle artifacts, witness identity mismatch, missing provenance, and mixed-role cycles.
+
+## Topology support after the oracle-suite milestone
+
+The residual linker now supports deterministic multiple import/provider bindings and mixed importer/provider role chains for function imports.  Binding ambiguity still fails if one importer import has more than one candidate provider.  Mixed roles are scheduled by a dependency DAG over function bindings; dependency cycles fail with a named diagnostic unless a future plan introduces explicit fixpoint semantics for cyclic linked summaries.  The current mixed-role proof obligation is deliberately scoped to scheduling/order and summary handoff evidence; a later richer summary-language milestone should make upstream value-dependence part of the mixed-role semantic relation.
+
+Multiple extern roots are resolved by matching residual component provenance for the imported callee name, falling back to the singleton-root case for the original return-only witness.

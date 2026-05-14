@@ -24,6 +24,8 @@
   abstract_speculate_metaocaml_sparse_blind_equal
   abstract_speculate_residual_linking_pe_dump
   abstract_speculate_residual_linking_pe_check
+  abstract_speculate_residual_linking_oracle_suite_dump
+  abstract_speculate_residual_linking_oracle_suite_check
   abstract_speculate_staged_transfer
   abstract_speculate_staged_lattice
   abstract_speculate_staged_bta_fixpoint)
@@ -249,6 +251,46 @@
    (run bash -c "root=$(cd ../../.. && pwd); rm -rf $root/_build/real-sparrow/abstract-speculate-residual-linking-pe")
    (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_linking_pe_dump.bc --module fixtures/abstract_speculate_residual_linking_pe/importer.c --module fixtures/abstract_speculate_residual_linking_pe/provider.c --out $root/_build/real-sparrow/abstract-speculate-residual-linking-pe/active")
    (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_linking_pe_check.bc --repo-root $root --artifact-dir $root/_build/real-sparrow/abstract-speculate-residual-linking-pe/active --report abstract_speculate_residual_linking_pe.report.json"))))
+
+(rule
+ (alias abstract_speculate_residual_linking_oracle_suite)
+ (targets abstract_speculate_residual_linking_oracle_suite.report.json)
+ (deps
+  abstract_speculate_residual_linking_oracle_suite_dump.bc
+  abstract_speculate_residual_linking_oracle_suite_check.bc
+  fixtures/abstract_speculate_residual_linking_oracle_suite/global_write_read/importer.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite/global_write_read/provider.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite/pointer_memory_effect/importer.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite/pointer_memory_effect/provider.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite/multiple_providers_imports/importer.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite/multiple_providers_imports/provider_first.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite/multiple_providers_imports/provider_second.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite/mixed_role_chain/importer.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite/mixed_role_chain/middle.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite/mixed_role_chain/provider_a.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/global_write_read/importer.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/global_write_read/provider.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/pointer_memory_effect/importer.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/pointer_memory_effect/provider.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/multiple_providers_imports/importer.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/multiple_providers_imports/provider_first.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/multiple_providers_imports/provider_second.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/mixed_role_chain/importer.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/mixed_role_chain/middle.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/mixed_role_chain/provider_a.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_negative/ambiguous_provider/importer.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_negative/ambiguous_provider/provider_a.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_negative/ambiguous_provider/provider_b.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_negative/cycle_topology/a.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_negative/cycle_topology/b.c
+  ../doc/experiments/abstract-speculate-residual-linking-pe.md)
+ (action
+  (progn
+   (run bash -c "root=$(cd ../../.. && pwd); rm -rf $root/_build/real-sparrow/abstract-speculate-residual-linking-oracle-suite")
+   (run bash -c "root=$(cd ../../.. && pwd); neg=$root/_build/real-sparrow/abstract-speculate-residual-linking-oracle-suite/active/negative; mkdir -p $neg; set +e; ./abstract_speculate_residual_linking_pe_dump.bc --module fixtures/abstract_speculate_residual_linking_oracle_suite_negative/ambiguous_provider/importer.c --module fixtures/abstract_speculate_residual_linking_oracle_suite_negative/ambiguous_provider/provider_a.c --module fixtures/abstract_speculate_residual_linking_oracle_suite_negative/ambiguous_provider/provider_b.c --out $neg/ambiguous_provider.out > $neg/ambiguous_provider.log 2>&1; status=$?; set -e; test $status -ne 0; grep -q 'unsupported ambiguous semantic export mapping' $neg/ambiguous_provider.log")
+   (run bash -c "root=$(cd ../../.. && pwd); neg=$root/_build/real-sparrow/abstract-speculate-residual-linking-oracle-suite/active/negative; mkdir -p $neg; set +e; ./abstract_speculate_residual_linking_pe_dump.bc --module fixtures/abstract_speculate_residual_linking_oracle_suite_negative/cycle_topology/a.c --module fixtures/abstract_speculate_residual_linking_oracle_suite_negative/cycle_topology/b.c --out $neg/cycle_topology.out > $neg/cycle_topology.log 2>&1; status=$?; set -e; test $status -ne 0; grep -q 'unsupported cyclic mixed importer/provider residual-linking topology' $neg/cycle_topology.log")
+   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_linking_oracle_suite_dump.bc --witness 'global_write_read|global-write-read|fixtures/abstract_speculate_residual_linking_oracle_suite/global_write_read/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite/global_write_read/provider.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/global_write_read/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/global_write_read/provider.c' --witness 'pointer_memory_effect|pointer-memory-effect|fixtures/abstract_speculate_residual_linking_oracle_suite/pointer_memory_effect/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite/pointer_memory_effect/provider.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/pointer_memory_effect/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/pointer_memory_effect/provider.c' --witness 'multiple_providers_imports|multiple-providers-imports|fixtures/abstract_speculate_residual_linking_oracle_suite/multiple_providers_imports/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite/multiple_providers_imports/provider_first.c,fixtures/abstract_speculate_residual_linking_oracle_suite/multiple_providers_imports/provider_second.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/multiple_providers_imports/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/multiple_providers_imports/provider_first.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/multiple_providers_imports/provider_second.c' --witness 'mixed_role_chain|mixed-role-chain|fixtures/abstract_speculate_residual_linking_oracle_suite/mixed_role_chain/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite/mixed_role_chain/middle.c,fixtures/abstract_speculate_residual_linking_oracle_suite/mixed_role_chain/provider_a.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/mixed_role_chain/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/mixed_role_chain/middle.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/mixed_role_chain/provider_a.c' --out $root/_build/real-sparrow/abstract-speculate-residual-linking-oracle-suite/active")
+   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_linking_oracle_suite_check.bc --repo-root $root --artifact-dir $root/_build/real-sparrow/abstract-speculate-residual-linking-oracle-suite/active --report abstract_speculate_residual_linking_oracle_suite.report.json"))))
 
 (alias
  (name abstract_speculate_pe_proof)
