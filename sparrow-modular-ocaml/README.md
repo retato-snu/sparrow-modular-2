@@ -4,6 +4,8 @@ Active implementation of the first MetaOCaml staged interval slice for Sparrow.
 
 This directory is intentionally separate from `../sparrow/`, which remains the frozen baseline/oracle. The slice demonstrates the first milestone from `.omx/plans/plan-metaocaml-staged-sparrow-interval.md`:
 
+For the current PE claim boundary, implemented-vs-missing status, residual-linking scope, and next milestone, see [`doc/sparrow-pe-status.md`](doc/sparrow-pe-status.md).
+
 - Stage 1 emits per-module summaries.
 - Dynamic cells carry executable MetaOCaml `D code` (`Trx.code`) rather than flat markers.
 - Stage 2 links module summaries and executes `D code` chains directly.
