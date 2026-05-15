@@ -6,6 +6,7 @@ let usage =
   "abstract_speculate_residual_linking_pe_check --repo-root <repo> --artifact-dir <dir> --report <json>"
 
 let member = Yojson.Safe.Util.member
+module Relation = Sparrow_modular_ocaml.Abstract_speculate_residual_relation
 let to_string = Yojson.Safe.Util.to_string
 
 let expect cond msg = if not cond then failwith msg
@@ -19,7 +20,6 @@ let bool_field name json = match assoc_field name json with Some (`Bool b) -> b 
 let int_field name json = match assoc_field name json with Some (`Int n) -> n | _ -> 0
 let list_field name json = match assoc_field name json with Some (`List xs) -> xs | _ -> []
 let bool_true_field name json = match assoc_field name json with Some (`Bool true) -> true | _ -> false
-let opt_int_field name json = match assoc_field name json with Some (`Int n) -> Some n | _ -> None
 
 let read_file path =
   let ic = open_in path in
@@ -62,133 +62,7 @@ let unique_string_set xs = List.sort_uniq String.compare xs
 let has_duplicates xs = List.length xs <> List.length (unique_string_set xs)
 let same_set left right = unique_string_set left = unique_string_set right
 
-let int_of_trimmed s =
-  try Some (int_of_string (String.trim s)) with Failure _ -> None
-
-let parse_singleton_interval_value value =
-  let value = String.trim value in
-  match int_of_trimmed value with
-  | Some n -> Some n
-  | None ->
-      let prefix = "([" in
-      let prefix_len = String.length prefix in
-      if String.length value <= prefix_len || String.sub value 0 prefix_len <> prefix then None
-      else
-        try
-          let comma = String.index_from value prefix_len ',' in
-          let close = String.index_from value (comma + 1) ']' in
-          match
-            int_of_trimmed (String.sub value prefix_len (comma - prefix_len)),
-            int_of_trimmed (String.sub value (comma + 1) (close - comma - 1))
-          with
-          | Some lo, Some hi when lo = hi -> Some lo
-          | _ -> None
-        with Not_found -> None
-
-let row_memory row = list_field "memory" row
-
-let memory_cell ~location row =
-  row_memory row
-  |> List.find_opt (fun cell -> string_field "location" cell = location)
-
-let provider_return_from_linked_output linked ~provider_module ~export_name =
-  let location = "(" ^ export_name ^ ",__return__)" in
-  let rows = list_field "final_output_table" (linked_output linked) in
-  rows
-  |> List.find_map (fun row ->
-       if string_field "linked_module_id" row = provider_module then
-         match memory_cell ~location row with
-         | Some cell ->
-             parse_singleton_interval_value (string_field "value" cell)
-             |> Option.map (fun value -> string_field "node" row, string_field "value" cell, value)
-         | None -> None
-       else None)
-
-let importer_dynamic_call_value linked ~importer_module ~extern_root =
-  let rows = list_field "final_output_table" (linked_output linked) in
-  rows
-  |> List.find_map (fun row ->
-       if string_field "linked_module_id" row = importer_module &&
-          string_field "node" row = extern_root then
-         row_memory row
-         |> List.find_map (fun cell ->
-              if contains (string_field "transfer_event" cell) "extern-call-result" then
-                opt_int_field "residual_arithmetic_value" cell
-              else None)
-       else None)
-
-let semantic_export_key json =
-  string_field "provider_module" json ^ ":" ^ string_field "export_name" json
-
-let find_semantic_export linked ~provider_module ~export_name =
-  list_field "semantic_exports" linked
-  |> List.find_opt (fun export ->
-       string_field "provider_module" export = provider_module &&
-       string_field "export_name" export = export_name)
-
-let phase_index linked ~module_id ~event_prefix =
-  list_field "phase_log" linked
-  |> List.find_map (fun event ->
-       if string_field "module_id" event = module_id &&
-          contains (string_field "event" event) event_prefix then
-         Some (int_field "phase_index" event)
-       else None)
-
-let phases_ordered linked ~provider_module ~importer_module ~export_name =
-  match
-    phase_index linked ~module_id:provider_module ~event_prefix:"provider-stage2-executed",
-    phase_index linked ~module_id:provider_module ~event_prefix:("semantic-export-derived:" ^ export_name),
-    phase_index linked ~module_id:importer_module ~event_prefix:("linked-environment-bound:" ^ export_name),
-    phase_index linked ~module_id:importer_module ~event_prefix:"importer-stage2-executed-with-linked-environment"
-  with
-  | Some provider_i, Some export_i, Some env_i, Some importer_i ->
-      provider_i < export_i && export_i < env_i && env_i < importer_i
-  | _ -> false
-
-let semantic_linkage_ok linked =
-  let exports = list_field "semantic_exports" linked in
-  let env = list_field "linked_environment" linked in
-  let derivation = list_field "linked_stage2_input_derivation" linked in
-  exports <> [] &&
-  env <> [] &&
-  derivation <> [] &&
-  string_field "dispatch" (member "linked_stage2_input" linked) = "provider-derived-linked-environment" &&
-  bool_field "linked_environment_generated" (member "linked_stage2_input" linked) &&
-  string_field "derivation_source" (member "linked_stage2_input" linked) = "provider-stage2-output" &&
-  List.for_all (fun entry ->
-    let provider_module = string_field "provider_module" entry in
-    let importer_module = string_field "importer_module" entry in
-    let export_name = string_field "export_name" entry in
-    let extern_root = string_field "importer_extern_root" entry in
-    let linked_value = int_field "linked_return_value" entry in
-    match find_semantic_export linked ~provider_module ~export_name with
-    | None -> false
-    | Some export ->
-        string_field "derivation_source" export = "provider-stage2-output" &&
-        string_field "derivation_source" entry = "provider-stage2-output" &&
-        int_field "return_value" export = linked_value &&
-        begin match provider_return_from_linked_output linked ~provider_module ~export_name with
-        | Some (_node, abstract_value, provider_value) ->
-            provider_value = linked_value &&
-            string_field "abstract_return_value" export = abstract_value
-        | None -> false
-        end &&
-        begin match importer_dynamic_call_value linked ~importer_module ~extern_root with
-        | Some importer_value -> importer_value = linked_value
-        | None -> false
-        end &&
-        phases_ordered linked ~provider_module ~importer_module ~export_name &&
-        List.exists (fun derivation_entry ->
-          string_field "importer_module" derivation_entry = importer_module &&
-          string_field "importer_extern_root" derivation_entry = extern_root &&
-          string_field "provider_module" derivation_entry = provider_module &&
-          string_field "export_name" derivation_entry = export_name &&
-          string_field "derivation_source" derivation_entry = "provider-stage2-output" &&
-          string_field "effect_reason" derivation_entry = "linked-provider-return" &&
-          int_field "linked_return_value" derivation_entry = linked_value)
-          derivation)
-    env &&
-  not (has_duplicates (List.map semantic_export_key exports))
+let semantic_linkage_ok linked = Relation.primary_linkage_ok linked
 
 let key_of_module_json json = string_field "module_id" json ^ ":" ^ string_field "source_hash" json
 let key_of_log_json json = string_field "module_id" json ^ ":" ^ string_field "source_hash" json
@@ -501,6 +375,9 @@ let () =
   require_source_absent (project_path "sparrow-modular-ocaml/src/abstract_speculate_residual_linker.ml");
   require_source_absent (project_path "sparrow-modular-ocaml/test/abstract_speculate_residual_linking_pe_dump.ml");
   let recomputed = recompute_evidence ~source_guard_passed:true ~manifest linked in
+  let primary_linkage_check = Relation.primary_linkage_check_json linked in
+  expect (string_field "status" primary_linkage_check = "pass")
+    "primary linkage selected-observation invariant check failed";
   expect_evidence_matches "top evidence" (top_evidence linked) recomputed;
   expect_evidence_matches "linked output evidence" (output_evidence linked) recomputed;
   expect_evidence_matches "execution log evidence" (log_evidence linked) recomputed;
@@ -520,6 +397,10 @@ let () =
     "module_artifact_count", `Int (List.length artifacts);
     "linked_artifact", `String linked_path;
     "linked_residual_analyzer_evidence", evidence_to_json recomputed;
+    "primary_linkage_observation_summary", member "primary_linkage_observation_summary" primary_linkage_check;
+    "primary_linkage_observation_check", primary_linkage_check;
+    "primary_linkage_matched_observations", member "matched_observations" primary_linkage_check;
+    "primary_linkage_failures", member "failures" primary_linkage_check;
     "matched_obligation_count", `Int recomputed.matched_obligation_count;
     "unresolved_obligation_count", `Int recomputed.unresolved_obligation_count;
     "per_module_stage2_inputs_used", `Bool true;

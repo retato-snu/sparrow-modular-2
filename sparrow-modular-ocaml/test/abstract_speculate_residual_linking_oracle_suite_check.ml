@@ -6,6 +6,7 @@ let usage =
   "abstract_speculate_residual_linking_oracle_suite_check --repo-root <repo> --artifact-dir <dir> --report <json>"
 
 let member = Yojson.Safe.Util.member
+module Relation = Sparrow_modular_ocaml.Abstract_speculate_residual_relation
 
 let expect cond msg = if not cond then failwith msg
 
@@ -14,7 +15,6 @@ let assoc_field name = function
   | _ -> None
 
 let string_field name json = match assoc_field name json with Some (`String s) -> s | _ -> ""
-let int_field name json = match assoc_field name json with Some (`Int n) -> n | _ -> 0
 let list_field name json = match assoc_field name json with Some (`List xs) -> xs | _ -> []
 
 let contains s sub =
@@ -38,234 +38,7 @@ let project_path rel =
     if String.length rel > prefix_len && String.sub rel 0 prefix_len = prefix then
       Filename.concat !repo_root (String.sub rel prefix_len (String.length rel - prefix_len))
     else direct
-let sort_uniq xs = List.sort_uniq String.compare xs
-let has_duplicates xs = List.length xs <> List.length (sort_uniq xs)
-
-let int_of_trimmed s = try Some (int_of_string (String.trim s)) with Failure _ -> None
-
-let parse_interval_value value =
-  let value = String.trim value in
-  match int_of_trimmed value with
-  | Some n -> Some (n, n)
-  | None ->
-      let prefix = "([" in
-      let prefix_len = String.length prefix in
-      if String.length value <= prefix_len || String.sub value 0 prefix_len <> prefix then None
-      else
-        try
-          let comma = String.index_from value prefix_len ',' in
-          let close = String.index_from value (comma + 1) ']' in
-          let lo_s = String.trim (String.sub value prefix_len (comma - prefix_len)) in
-          let hi_s = String.trim (String.sub value (comma + 1) (close - comma - 1)) in
-          match lo_s, hi_s with
-          | "-oo", _ | _, "+oo" -> None
-          | _ ->
-              begin match int_of_trimmed lo_s, int_of_trimmed hi_s with
-              | Some lo, Some hi -> Some (lo, hi)
-              | _ -> None
-              end
-        with Not_found -> None
-
-let interval_contains_value value n =
-  match parse_interval_value value with
-  | Some (lo, hi) -> lo <= n && n <= hi
-  | None -> false
-
-let singleton_value value =
-  match parse_interval_value value with
-  | Some (lo, hi) when lo = hi -> Some lo
-  | _ -> int_of_trimmed value
-
-let row_memory row = list_field "memory" row
-
-let cells_in_tables tables =
-  tables
-  |> List.concat_map (fun (table_name, rows) ->
-       rows |> List.concat_map (fun row ->
-         row_memory row |> List.map (fun cell -> table_name, row, cell)))
-
-let linked_tables linked =
-  let output = member "linked_output" linked in
-  ["final_input_table", list_field "final_input_table" output;
-   "final_output_table", list_field "final_output_table" output]
-
-let oracle_tables oracle =
-  let projection = member "projection" oracle in
-  ["final_input_table", list_field "final_input_table" projection;
-   "final_output_table", list_field "final_output_table" projection]
-
-let find_value_by_location tables location =
-  cells_in_tables tables
-  |> List.find_map (fun (_table, _row, cell) ->
-       if string_field "location" cell = location then Some (string_field "value" cell) else None)
-
-let values_by_location tables location =
-  cells_in_tables tables
-  |> List.filter_map (fun (_table, _row, cell) ->
-       if string_field "location" cell = location then Some (string_field "value" cell) else None)
-
-let find_singleton_by_location tables location =
-  cells_in_tables tables
-  |> List.find_map (fun (_table, _row, cell) ->
-       if string_field "location" cell = location then singleton_value (string_field "value" cell) else None)
-
-let return_location name = "(" ^ name ^ ",__return__)"
-
 let semantic_exports linked = list_field "semantic_exports" linked
-let linked_environment linked = list_field "linked_environment" linked
-
-let oracle_return_value oracle export_name =
-  find_singleton_by_location (oracle_tables oracle) (return_location export_name)
-
-let return_obligations witness_id residual oracle =
-  semantic_exports residual
-  |> List.map (fun export ->
-       let name = string_field "export_name" export in
-       let residual_value = int_field "return_value" export in
-       let oracle_value = oracle_return_value oracle name in
-       let pass = oracle_value = Some residual_value in
-       `Assoc [
-         "name", `String "return_value_matches_oracle";
-         "category", `String "return";
-         "witness_id", `String witness_id;
-         "symbol", `String name;
-         "status", `String (if pass then "pass" else "fail");
-         "residual_value", `Int residual_value;
-         "oracle_value", (match oracle_value with Some n -> `Int n | None -> `Null);
-         "evidence_paths", `List [`String "semantic_exports"; `String "projection.final_output_table"];
-       ])
-
-let declaration_kind residual ~field_name ~module_field ~name_field entry =
-  let module_id = string_field module_field entry in
-  let name = string_field name_field entry in
-  list_field field_name residual
-  |> List.find_map (fun decl_entry ->
-       if string_field "module_id" decl_entry = module_id then
-         let declaration = member "declaration" decl_entry in
-         if string_field "name" declaration = name then Some (string_field "kind" declaration) else None
-       else None)
-  |> Option.value ~default:"unknown"
-
-let binding_key residual witness_id entry =
-  let semantic_export = member "semantic_export" entry in
-  let importer_module = string_field "importer_module" entry in
-  let provider_module = string_field "provider_module" entry in
-  let import_name = string_field "import_name" entry in
-  let export_name = string_field "export_name" entry in
-  String.concat ":" [
-    "witness"; witness_id;
-    "importer"; importer_module; string_field "importer_source_hash" entry;
-    "import"; import_name; declaration_kind residual ~field_name:"declared_imports" ~module_field:"importer_module" ~name_field:"import_name" entry;
-    "provider"; provider_module; string_field "provider_source_hash" semantic_export;
-    "export"; export_name; declaration_kind residual ~field_name:"declared_exports" ~module_field:"provider_module" ~name_field:"export_name" entry;
-  ]
-
-let provider_resolution_obligation witness_id residual oracle =
-  let env = linked_environment residual in
-  let keys = List.map (binding_key residual witness_id) env in
-  let all_oracle_returns_exist =
-    env |> List.for_all (fun entry ->
-      oracle_return_value oracle (string_field "export_name" entry) = Some (int_field "linked_return_value" entry))
-  in
-  let pass = env <> [] && not (has_duplicates keys) && all_oracle_returns_exist in
-  `Assoc [
-    "name", `String "provider_resolution_matches_oracle";
-    "category", `String "topology";
-    "witness_id", `String witness_id;
-    "status", `String (if pass then "pass" else "fail");
-    "binding_keys", `List (List.map (fun k -> `String k) keys);
-    "evidence_paths", `List [`String "linked_environment"; `String "projection.final_output_table"];
-  ]
-
-let phase_index residual ~module_id ~event_part =
-  list_field "phase_log" residual
-  |> List.find_map (fun event ->
-       if string_field "module_id" event = module_id && contains (string_field "event" event) event_part then
-         Some (int_field "phase_index" event)
-       else None)
-
-let mixed_role_obligation witness_id residual oracle =
-  let env = linked_environment residual in
-  let import_modules = env |> List.map (fun e -> string_field "importer_module" e) |> sort_uniq in
-  let provider_modules = env |> List.map (fun e -> string_field "provider_module" e) |> sort_uniq in
-  let mixed = List.filter (fun m -> List.mem m provider_modules) import_modules in
-  let ordered =
-    env |> List.for_all (fun entry ->
-      let provider = string_field "provider_module" entry in
-      let importer = string_field "importer_module" entry in
-      let export_name = string_field "export_name" entry in
-      match
-        phase_index residual ~module_id:provider ~event_part:("semantic-export-derived:" ^ export_name),
-        phase_index residual ~module_id:importer ~event_part:("linked-environment-bound:" ^ export_name),
-        phase_index residual ~module_id:importer ~event_part:"importer-stage2-executed-with-linked-environment"
-      with
-      | Some export_i, Some env_i, Some importer_i -> export_i < env_i && env_i < importer_i
-      | _ -> false)
-  in
-  let oracle_ok = env |> List.for_all (fun e -> oracle_return_value oracle (string_field "export_name" e) <> None) in
-  let pass = mixed <> [] && ordered && oracle_ok in
-  `Assoc [
-    "name", `String "mixed_role_chain_matches_oracle";
-    "category", `String "topology";
-    "witness_id", `String witness_id;
-    "status", `String (if pass then "pass" else "fail");
-    "mixed_modules", `List (List.map (fun m -> `String m) mixed);
-    "claim_scope", `String "mixed-role scheduling/order and summary handoff; not upstream value-dependence";
-    "evidence_paths", `List [`String "phase_log"; `String "linked_environment"; `String "projection.final_output_table"];
-  ]
-
-let global_obligation witness_id residual oracle =
-  let residual_values = values_by_location (linked_tables residual) "shared_g" in
-  let oracle_value = find_singleton_by_location (oracle_tables oracle) "shared_g" in
-  let pass =
-    match oracle_value with
-    | Some ov ->
-        residual_values
-        |> List.exists (fun rv -> interval_contains_value rv ov || contains rv (string_of_int ov))
-    | None -> false
-  in
-  let residual_value =
-    residual_values
-    |> List.find_opt (fun rv ->
-         match oracle_value with
-         | Some ov -> interval_contains_value rv ov || contains rv (string_of_int ov)
-         | None -> false)
-  in
-  `Assoc [
-    "name", `String "global_write_read_matches_oracle";
-    "category", `String "global-write-read";
-    "witness_id", `String witness_id;
-    "status", `String (if pass then "pass" else "fail");
-    "location", `String "shared_g";
-    "residual_value", (match residual_value with Some v -> `String v | None -> `Null);
-    "oracle_value", (match oracle_value with Some n -> `Int n | None -> `Null);
-    "normalization", `String "oracle singleton accepted when contained in any residual interval observation";
-    "evidence_paths", `List [`String "linked_output.final_*_table"; `String "projection.final_*_table"];
-  ]
-
-let pointer_obligation witness_id residual oracle =
-  let location = "(write_ptr,p)" in
-  let residual_value = find_value_by_location (linked_tables residual) location in
-  let oracle_value = find_value_by_location (oracle_tables oracle) location in
-  let oracle_return = find_singleton_by_location (oracle_tables oracle) (return_location "write_ptr") in
-  let pass =
-    match residual_value, oracle_value, oracle_return with
-    | Some rv, Some ov, _ -> contains rv "main,x" && contains ov "main,x"
-    | Some rv, None, Some 5 -> contains rv "main,x"
-    | _ -> false
-  in
-  `Assoc [
-    "name", `String "pointer_memory_effect_matches_oracle";
-    "category", `String "pointer-memory-effect";
-    "witness_id", `String witness_id;
-    "status", `String (if pass then "pass" else "fail");
-    "location", `String location;
-    "residual_value", (match residual_value with Some v -> `String v | None -> `Null);
-    "oracle_value", (match oracle_value with Some v -> `String v | None -> `Null);
-    "oracle_return_value", (match oracle_return with Some n -> `Int n | None -> `Null);
-    "normalization", `String "pointer alias summary compared by residual shared pointee provenance and oracle write_ptr return/effect summary";
-    "evidence_paths", `List [`String "linked_output.final_*_table"; `String "projection.final_*_table"];
-  ]
 
 let source_guard_obligation_for_paths witness_id residual_sources suite_sources =
   let forbidden = ["Real_sparrow_frontend." ^ "global_for_" ^ "files"; "Mergecil." ^ "merge"; "real_sparrow_" ^ "premerge_linked_observer"] in
@@ -297,65 +70,12 @@ let source_guard_obligation witness_id =
     [project_path "sparrow-modular-ocaml/test/abstract_speculate_residual_linking_oracle_suite_dump.ml";
      project_path "sparrow-modular-ocaml/test/abstract_speculate_residual_linking_oracle_suite_check.ml"]
 
-let obligation_status obligation_json = string_field "status" obligation_json
-let obligation_passes xs = xs |> List.for_all (fun o -> obligation_status o = "pass")
-
-let normalized_observations witness_id residual oracle =
-  let residual_obs =
-    semantic_exports residual
-    |> List.map (fun export ->
-      let name = string_field "export_name" export in
-      `Assoc [
-        "witness_id", `String witness_id;
-        "category", `String "return";
-        "module_role_path", `String (string_field "provider_module" export);
-        "symbol", `String name;
-        "location", `String (return_location name);
-        "abstract_value", `String (string_field "abstract_return_value" export);
-        "normalized_value", `Int (int_field "return_value" export);
-        "residual_provenance", `String ("semantic_exports:" ^ name);
-      ])
-  in
-  let oracle_obs =
-    semantic_exports residual
-    |> List.filter_map (fun export ->
-      let name = string_field "export_name" export in
-      match oracle_return_value oracle name with
-      | Some value -> Some (`Assoc [
-          "witness_id", `String witness_id;
-          "category", `String "return";
-          "module_role_path", `String "premerge-linked-observer";
-          "symbol", `String name;
-          "location", `String (return_location name);
-          "abstract_value", `String ("singleton:" ^ string_of_int value);
-          "normalized_value", `Int value;
-          "oracle_provenance", `String ("projection.final_output_table:" ^ name);
-        ])
-      | None -> None)
-  in
-  residual_obs, oracle_obs
-
+let normalized_observations = Relation.return_observations
 let obligations_for witness_id category residual oracle =
-  let return_obs = return_obligations witness_id residual oracle in
-  let category_obligation =
-    match category with
-    | "global-write-read" -> [global_obligation witness_id residual oracle]
-    | "pointer-memory-effect" -> [pointer_obligation witness_id residual oracle]
-    | "multiple-providers-imports" -> [provider_resolution_obligation witness_id residual oracle]
-    | "mixed-role-chain" -> [provider_resolution_obligation witness_id residual oracle; mixed_role_obligation witness_id residual oracle]
-    | "return-only" -> []
-    | _ -> failwith ("unknown witness category: " ^ category)
-  in
-  return_obs @ category_obligation @ [source_guard_obligation witness_id]
-
-let observations_have_provenance observations =
-  observations |> List.for_all (fun obs ->
-    string_field "residual_provenance" obs <> "" || string_field "oracle_provenance" obs <> "")
-
-let witness_pass_status obligations residual_obs oracle_obs =
-  obligations <> [] && obligation_passes obligations &&
-  residual_obs <> [] && oracle_obs <> [] &&
-  observations_have_provenance (residual_obs @ oracle_obs)
+  Relation.oracle_suite_obligations ~source_guard_obligation witness_id category residual oracle
+let observations_have_provenance = Relation.observations_have_provenance
+let obligation_passes = Relation.obligation_passes
+let witness_pass_status = Relation.witness_pass_status
 
 let witness_report witness =
   let witness_id = string_field "witness_id" witness in
@@ -376,7 +96,9 @@ let witness_report witness =
     (witness_id ^ ": oracle artifact identity mismatch");
   let obligations = obligations_for witness_id category residual oracle in
   let residual_obs, oracle_obs = normalized_observations witness_id residual oracle in
-  let pass = witness_pass_status obligations residual_obs oracle_obs in
+  let selected_relation = Relation.selected_observation_relation_json ~witness_id ~residual ~oracle in
+  let pass = witness_pass_status obligations residual_obs oracle_obs &&
+             string_field "status" selected_relation = "pass" in
   `Assoc [
     "witness_id", `String witness_id;
     "category", `String category;
@@ -388,6 +110,12 @@ let witness_report witness =
       "oracle", `List oracle_obs;
       "relation", `String "residual-to-oracle-and-oracle-to-residual-selected-equivalence";
     ];
+    "selected_observation_summary", member "selected_observation_summary" selected_relation;
+    "selected_observation_relation", selected_relation;
+    "residual_to_oracle", member "residual_to_oracle" selected_relation;
+    "oracle_to_residual", member "oracle_to_residual" selected_relation;
+    "missing_observations", member "missing_observations" selected_relation;
+    "extra_observations", member "extra_observations" selected_relation;
     "obligations", `List obligations;
   ]
 
@@ -568,6 +296,15 @@ let () =
     "oracle_reference_kind", `String "premerge-linked-observer";
     "residual_linking_implementation_premerge_free", `Bool true;
     "witnesses", `List witness_reports;
+    "selected_observation_summary", `Assoc [
+      "witness_count", `Int (List.length witness_reports);
+      "relation", `String "selected-observation-equivalence";
+    ];
+    "selected_observation_relation", `List (List.map (fun w -> member "selected_observation_relation" w) witness_reports);
+    "residual_to_oracle", `List (List.map (fun w -> member "residual_to_oracle" w) witness_reports);
+    "oracle_to_residual", `List (List.map (fun w -> member "oracle_to_residual" w) witness_reports);
+    "missing_observations", `List (List.map (fun w -> member "missing_observations" w) witness_reports);
+    "extra_observations", `List (List.map (fun w -> member "extra_observations" w) witness_reports);
     "obligations", `List all_obligations;
     "negative_cases", `List negative_cases;
     "non_claims", `List [

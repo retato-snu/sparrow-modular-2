@@ -18,6 +18,70 @@ The linked analyzer is produced after each module has already passed through the
 - Structural import/export obligations are derived from parsed CIL/global data retained in each stage-1 result. The linker does not accept manual import/export lists as the source of truth.
 - The first semantic milestone is return-only: the provider's stage-2 output row for `(linked_provider,__return__)` is summarized into `semantic_exports`, then consumed through `linked_environment` to build the importer's dynamic extern-call input.
 
+## Selected-observation relation contract
+
+The strengthened residual-linking contract is the selected-observation relation:
+
+```text
+link(PE(I, m1), ..., PE(I, mn)) ≈_selected_obs selected_obs(I(m1 ⊕ ... ⊕ mn))
+```
+
+The left side is the linked residual analyzer produced after each module has already passed through module-local PE. The right side is not an implementation path: it is the oracle/reference projection used to explain what observations must agree when the same modules are viewed as one linked program. The premerge linked observer remains oracle evidence only and must not be called from the residual linker.
+
+### Domains
+
+The relation ranges over prototype witness artifacts, not arbitrary C programs. Its domains are:
+
+- residual artifacts emitted by module-local `PE(I, mi)` followed by residual linking;
+- oracle/reference artifacts emitted by the premerge linked observer for the same witness group;
+- selected observations extracted from final input/output tables, semantic exports, linked environments, phase logs, and linked stage-2 derivations.
+
+### `selected_obs` projection
+
+`selected_obs` keeps only observations required by the residual-linking obligations:
+
+1. **Return values**: provider return summaries at locations such as `(linked_provider,__return__)`.
+2. **Global read/write observations**: selected global locations such as `shared_g`, with interval-compatible normalization.
+3. **Pointer alias/effect observations**: selected pointer-write locations such as `(write_ptr,p)`, compared by observable pointee/effect provenance.
+4. **Provider/import bindings**: importer/provider/export/import identities, source hashes, declaration kinds, and linked return values.
+5. **Phase ordering**: provider execution, semantic export derivation, linked environment binding, and importer linked execution order.
+6. **Call effects**: linked importer extern-call effects, especially reason `linked-provider-return`, derived from provider stage-2 output.
+7. **Provenance**: evidence paths into residual and oracle artifacts. Missing provenance is a relation failure.
+
+### Normalization
+
+Normalization is deliberately small:
+
+- singleton integer strings and singleton intervals normalize to the same integer value;
+- a residual interval-compatible global observation may match an oracle singleton when the singleton is contained in the residual interval;
+- pointer observations compare selected alias/effect evidence, not the full C memory model;
+- provider/import binding keys normalize over witness id, module ids, source hashes, import/export names, and declaration kinds;
+- phase observations normalize to relative order constraints rather than exact absolute phase numbers.
+
+### Failure cases
+
+The relation fails when any selected obligation is absent or inconsistent, including:
+
+- mismatched return/global/pointer values or effects;
+- missing residual or oracle observation;
+- missing row/effect provenance;
+- ambiguous provider binding;
+- wrong provider/export/environment/importer phase order;
+- call effects not marked `linked-provider-return`;
+- shortcut leakage through premerge/global merge implementation paths;
+- mixed-role cycles, because cyclic fixpoint summary semantics are out of scope.
+
+This contract is `prototype-non-public`: it is a summary/checker relation for the current witness suite, not a final artifact schema, full memory model, cyclic summary semantics, or whole-program C equivalence proof.
+
+### Primary-linkage check vs oracle-suite relation
+
+There are two related checker outputs, and they intentionally make different claims:
+
+- `primary_linkage_observation_check` is a residual-internal invariant check for the two-module PE smoke witness. It validates provider-derived importer inputs, selected return/call-effect rows, phase order, and provenance. It does **not** perform an oracle comparison and therefore must not report `residual_to_oracle`/`oracle_to_residual` directions.
+- `selected_observation_relation` is emitted by the oracle suite only. It compares residual observations against premerge oracle/reference observations for the selected witness domains above.
+
+This naming split is part of the claim boundary: the primary PE check establishes residual-linkage evidence quality, while the oracle suite establishes witness-bounded selected-observation agreement.
+
 ## Witnesses
 
 The first witness pair lives under:
