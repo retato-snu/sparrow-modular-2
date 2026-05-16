@@ -97,8 +97,9 @@ let witness_report witness =
   let obligations = obligations_for witness_id category residual oracle in
   let residual_obs, oracle_obs = normalized_observations witness_id residual oracle in
   let selected_relation = Relation.selected_observation_relation_json ~witness_id ~residual ~oracle in
+  let full_itv_relation = Relation.full_itv_semantic_relation_json ~witness_id ~residual ~oracle in
   let pass = witness_pass_status obligations residual_obs oracle_obs &&
-             string_field "status" selected_relation = "pass" in
+             string_field "status" full_itv_relation = "pass" in
   `Assoc [
     "witness_id", `String witness_id;
     "category", `String category;
@@ -108,14 +109,25 @@ let witness_report witness =
     "normalized_observations", `Assoc [
       "residual", `List residual_obs;
       "oracle", `List oracle_obs;
-      "relation", `String "residual-to-oracle-and-oracle-to-residual-selected-equivalence";
+      "relation", `String "diagnostic selected observations; authoritative pass gate is full_itv_semantic_relation";
     ];
-    "selected_observation_summary", member "selected_observation_summary" selected_relation;
-    "selected_observation_relation", selected_relation;
-    "residual_to_oracle", member "residual_to_oracle" selected_relation;
-    "oracle_to_residual", member "oracle_to_residual" selected_relation;
-    "missing_observations", member "missing_observations" selected_relation;
-    "extra_observations", member "extra_observations" selected_relation;
+    "full_itv_semantic_summary", member "summary" full_itv_relation;
+    "full_itv_semantic_relation", full_itv_relation;
+    "semantic_universe", member "semantic_universe" full_itv_relation;
+    "semantic_universe_manifest", member "semantic_universe_manifest" full_itv_relation;
+    "failure_taxonomy", member "failure_taxonomy" full_itv_relation;
+    "canonicalization", member "canonicalization" full_itv_relation;
+    "oracle_identity", member "oracle_identity" full_itv_relation;
+    "residual_to_origin", member "residual_to_origin" full_itv_relation;
+    "origin_to_residual", member "origin_to_residual" full_itv_relation;
+    "diagnostics", `Assoc [
+      "selected_observation_summary", member "selected_observation_summary" selected_relation;
+      "selected_observation_relation", selected_relation;
+      "residual_to_oracle", member "residual_to_oracle" selected_relation;
+      "oracle_to_residual", member "oracle_to_residual" selected_relation;
+      "missing_observations", member "missing_observations" selected_relation;
+      "extra_observations", member "extra_observations" selected_relation;
+    ];
     "obligations", `List obligations;
   ]
 
@@ -156,6 +168,14 @@ let remove_linked_location location residual =
 let obligation_set_fails witness_id category residual oracle =
   not (obligation_passes (obligations_for witness_id category residual oracle))
 
+let full_itv_relation_fails witness_id residual oracle =
+  let relation = Relation.full_itv_semantic_relation_json ~witness_id ~residual ~oracle in
+  string_field "status" relation = "fail"
+
+let selected_relation_passes witness_id residual oracle =
+  let relation = Relation.selected_observation_relation_json ~witness_id ~residual ~oracle in
+  string_field "status" relation = "pass"
+
 let fails f =
   try
     ignore (f ());
@@ -185,7 +205,8 @@ let negative_cases witnesses =
   let return_false =
     match loaded with
     | (id, category, residual, oracle, _) :: _ ->
-        obligation_set_fails id category (mutate_first_semantic_export_return residual 999) oracle
+        obligation_set_fails id category (mutate_first_semantic_export_return residual 999) oracle &&
+        full_itv_relation_fails id (mutate_first_semantic_export_return residual 999) oracle
     | [] -> false
   in
   let global_false =
@@ -198,6 +219,14 @@ let negative_cases witnesses =
     match find "pointer_memory_effect" with
     | Some (id, category, residual, oracle, _) ->
         obligation_set_fails id category (remove_linked_location "(write_ptr,p)" residual) oracle
+    | None -> false
+  in
+  let non_selected_itv_cell_false =
+    match find "global_write_read" with
+    | Some (id, _category, residual, oracle, _) ->
+        let mutated = remove_linked_location "(main,tmp)" residual in
+        full_itv_relation_fails id mutated oracle &&
+        selected_relation_passes id mutated oracle
     | None -> false
   in
   let mixed_false =
@@ -242,6 +271,7 @@ let negative_cases witnesses =
     false_case "mismatched_return_or_effect_summary" return_false;
     false_case "missing_global_write_read_effect" global_false;
     false_case "missing_pointer_memory_effect" pointer_false;
+    false_case "non_selected_itv_cell_mutation_fails_full_relation" non_selected_itv_cell_false;
     false_case "ambiguous_provider_accepted_incorrectly"
       (log_contains (Filename.concat negative_dir "ambiguous_provider.log") "unsupported ambiguous semantic export mapping");
     false_case "invalid_mixed_role_propagation" mixed_false;
@@ -288,30 +318,44 @@ let () =
     "at least one proof obligation failed";
   expect (negative_cases |> List.for_all (fun n -> string_field "status" n = "pass"))
     "at least one negative case was not covered";
+  let suite_pass = witness_reports |> List.for_all (fun w -> string_field "status" w = "pass") in
+  expect suite_pass "at least one full-Itv semantic relation failed";
   let report_json = `Assoc [
     "schema_version", `String "abstract-speculate-residual-linking-oracle-suite/v1";
     "schema_status", `String "prototype-non-public";
     "suite_id", `String "abstract-speculate-residual-linking-oracle-suite";
-    "suite_status", `String "pass";
+    "suite_status", `String (if suite_pass then "pass" else "fail");
+    "suite_pass_gate", `String "full_itv_semantic_relation.status for every witness plus proof obligations";
     "oracle_reference_kind", `String "premerge-linked-observer";
     "residual_linking_implementation_premerge_free", `Bool true;
     "witnesses", `List witness_reports;
-    "selected_observation_summary", `Assoc [
+    "full_itv_semantic_summary", `Assoc [
       "witness_count", `Int (List.length witness_reports);
-      "relation", `String "selected-observation-equivalence";
+      "relation", `String "full-sparrow-itv-semantic-relation";
+      "pass_gate", `String "authoritative";
     ];
-    "selected_observation_relation", `List (List.map (fun w -> member "selected_observation_relation" w) witness_reports);
-    "residual_to_oracle", `List (List.map (fun w -> member "residual_to_oracle" w) witness_reports);
-    "oracle_to_residual", `List (List.map (fun w -> member "oracle_to_residual" w) witness_reports);
-    "missing_observations", `List (List.map (fun w -> member "missing_observations" w) witness_reports);
-    "extra_observations", `List (List.map (fun w -> member "extra_observations" w) witness_reports);
+    "full_itv_semantic_relation", `List (List.map (fun w -> member "full_itv_semantic_relation" w) witness_reports);
+    "residual_to_origin", `List (List.map (fun w -> member "residual_to_origin" w) witness_reports);
+    "origin_to_residual", `List (List.map (fun w -> member "origin_to_residual" w) witness_reports);
+    "diagnostics", `Assoc [
+      "selected_observation_summary", `Assoc [
+        "witness_count", `Int (List.length witness_reports);
+        "relation", `String "selected-observation-equivalence";
+        "pass_gate", `String "diagnostic-only";
+      ];
+      "selected_observation_relation", `List (List.map (fun w -> member "selected_observation_relation" (member "diagnostics" w)) witness_reports);
+    ];
     "obligations", `List all_obligations;
     "negative_cases", `List negative_cases;
     "non_claims", `List [
       `String "no proof assistant mechanization";
       `String "no final artifact schema freeze";
       `String "no broad arbitrary-C coverage";
-      `String "witness-bounded selected-observation equivalence only";
+      `String "no Oct semantics";
+      `String "no Taint semantics";
+      `String "no arbitrary-C or whole-program semantic equivalence";
+      `String "full Sparrow-Itv relation is witness-bounded to the oracle suite";
+      `String "selected-observation evidence is diagnostic/compatibility only";
     ];
   ] in
   Sparrow_modular_ocaml.Real_sparrow_artifact.write_json !report report_json;

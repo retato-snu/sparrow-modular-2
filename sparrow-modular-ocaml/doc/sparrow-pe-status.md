@@ -29,9 +29,9 @@ The intended end-to-end research target remains:
 link(PE(I, m), d) ~= I(m + d)
 ```
 
-Current evidence supports this only for selected ItvDom sparse-fixpoint
-witnesses and selected linked observations, not arbitrary C programs or the full
-Sparrow product analyzer.
+Current evidence supports this for the witness-bounded full Sparrow-Itv evidence
+universe emitted by the residual-linking oracle suite, not arbitrary-C programs,
+Oct/Taint semantics, or the full Sparrow product analyzer.
 
 ## Implemented
 
@@ -49,7 +49,7 @@ Sparrow product analyzer.
 | BTA/fact provenance reports | Implemented | `abstract_speculate_metaocaml_sparse.*.json` reports. |
 | Blind static-projection convergence guard | Implemented | Residual code growth is not used as the fixpoint convergence criterion. |
 | First residual-linking prototype | Implemented for bounded witnesses | `src/abstract_speculate_residual_linker.ml`, `@abstract_speculate_residual_linking_pe`. |
-| Residual-linking oracle suite | Implemented as prototype evidence | `@abstract_speculate_residual_linking_oracle_suite`. |
+| Residual-linking oracle suite | Implemented as prototype full Sparrow-Itv evidence | `@abstract_speculate_residual_linking_oracle_suite`. |
 
 ## Not implemented / not claimed
 
@@ -57,6 +57,7 @@ Sparrow product analyzer.
 | --- | --- | --- |
 | Full Sparrow PE | Only selected real-Sparrow boundaries and the ItvDom sparse slice are staged. | Avoid claiming a complete PE of Sparrow. |
 | Full product-domain staging | The accepted staged semantics are still Itv-focused; other product components are not generally residualized. | Product-domain fidelity is required before broad Sparrow claims. |
+| Oct/Taint semantic preservation | The full relation is Itv-scoped only. | Product-domain claims require separate evidence and tests. |
 | Arbitrary-C semantic preservation | Fixtures and oracle-suite witnesses bound the evidence. | Current results are not a theorem for all C modules. |
 | General residual summary language | Return/global/pointer observations are witness-bounded. | Broader linking needs a typed effect/summary algebra. |
 | Cyclic residual linking | Mixed-role cycles are rejected. | Cycles require an explicit linked residual fixpoint semantics. |
@@ -73,12 +74,20 @@ bindings, including multiple provider/import bindings and a mixed importer /
 provider role chain.  It rejects ambiguous provider choices and cyclic mixed-role
 topologies.
 
-The oracle-suite relation is deliberately selected-observation-bounded:
+The oracle-suite relation is now a witness-bounded full Sparrow-Itv relation:
 
 ```text
-selected_obs(link(PE(I, m1), ..., PE(I, mn)))
-  == selected_obs(premerge_oracle(m1 + ... + mn))
+origin_itv(premerge_oracle(m1 + ... + mn))
+  <= residual_itv(link(PE(I, m1), ..., PE(I, mn)))
 ```
+
+Residual-to-origin evidence/provenance is checked separately; exact full-table
+equality is not claimed when residual Itv cells are documented
+over-approximations.
+
+The report gate is `full_itv_semantic_relation.status` for every witness plus
+the named proof obligations.  The legacy `selected_observation_relation` remains
+only under diagnostics/compatibility and is not the suite pass gate.
 
 Covered positive witness categories:
 
@@ -88,9 +97,11 @@ Covered positive witness categories:
 - mixed-role scheduling and summary handoff.
 
 Covered negative cases include mismatched returns/effects, missing global or
-pointer observations, ambiguous provider acceptance, invalid mixed-role phase
-ordering, forbidden premerge shortcut leakage, missing oracle artifacts, witness
-identity mismatch, missing provenance, and mixed-role dependency cycles.
+pointer observations, non-selected Itv cell removal that fails the full relation
+while selected diagnostics still pass, ambiguous provider acceptance, invalid
+mixed-role phase ordering, forbidden premerge shortcut leakage, missing oracle
+artifacts, witness identity mismatch, missing provenance, and mixed-role
+dependency cycles.
 
 ## Verification commands
 
@@ -112,11 +123,11 @@ git diff --exit-code -- sparrow
 
 ## Recommended next milestone
 
-Next work should not broaden the public claim first.  It should make the current
-prototype easier to evaluate:
+Next work should not broaden beyond the Itv witness universe first.  It should
+make the current prototype easier to evaluate:
 
 1. stabilize and commit the residual-linking oracle-suite artifacts;
-2. specify the selected-observation relation in the experiment document;
+2. keep the full Sparrow-Itv relation schema documented and prototype/non-public;
 3. introduce a small typed summary/effect language for returns, globals, pointer
    writes, and provenance;
 4. factor residual-linking scheduling into an explicit acyclic dependency graph;

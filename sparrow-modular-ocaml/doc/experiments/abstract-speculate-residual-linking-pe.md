@@ -18,15 +18,21 @@ The linked analyzer is produced after each module has already passed through the
 - Structural import/export obligations are derived from parsed CIL/global data retained in each stage-1 result. The linker does not accept manual import/export lists as the source of truth.
 - The first semantic milestone is return-only: the provider's stage-2 output row for `(linked_provider,__return__)` is summarized into `semantic_exports`, then consumed through `linked_environment` to build the importer's dynamic extern-call input.
 
-## Selected-observation relation contract
+## Full Sparrow-Itv semantic relation contract
 
-The strengthened residual-linking contract is the selected-observation relation:
+The strengthened oracle-suite contract is now the full Sparrow-Itv relation for
+the current residual-linking witness slice:
 
 ```text
-link(PE(I, m1), ..., PE(I, mn)) ≈_selected_obs selected_obs(I(m1 ⊕ ... ⊕ mn))
+link(PE(I, m1), ..., PE(I, mn)) ≈_full_itv premerge_itv_oracle(m1 ⊕ ... ⊕ mn)
 ```
 
-The left side is the linked residual analyzer produced after each module has already passed through module-local PE. The right side is not an implementation path: it is the oracle/reference projection used to explain what observations must agree when the same modules are viewed as one linked program. The premerge linked observer remains oracle evidence only and must not be called from the residual linker.
+The left side is the linked residual analyzer produced after each module has already passed through module-local PE. The right side is not an implementation path: it is the oracle/reference projection used to explain what Itv evidence must agree when the same modules are viewed as one linked program. The premerge linked observer remains oracle evidence only and must not be called from the residual linker.
+
+The relation is still witness-bounded and prototype/non-public.  "Full
+Sparrow-Itv" means the complete Itv evidence emitted by the accepted
+residual-linking slice, not Oct, Taint, arbitrary-C semantic equivalence, or a
+whole-program C theorem.
 
 ### Domains
 
@@ -34,7 +40,42 @@ The relation ranges over prototype witness artifacts, not arbitrary C programs. 
 
 - residual artifacts emitted by module-local `PE(I, mi)` followed by residual linking;
 - oracle/reference artifacts emitted by the premerge linked observer for the same witness group;
-- selected observations extracted from final input/output tables, semantic exports, linked environments, phase logs, and linked stage-2 derivations.
+- full final input/output Itv table cells exposed by those artifacts;
+- semantic exports, linked environments, phase logs, linked stage-2 derivations, completion evidence, and provenance required to interpret those cells.
+
+### Semantic universe manifest
+
+Each witness report emits `full_itv_semantic_relation` with:
+
+- `relation = "full-sparrow-itv-semantic-relation"`;
+- `domain = "sparrow-itv"`;
+- `semantic_universe` listing final tables, semantic exports, linked
+  environment/call-effect evidence, completion/status evidence, provenance, and
+  oracle identity;
+- `semantic_universe_manifest` classifying facts as compared, missing,
+  intentionally excluded, or expected-but-not-emitted;
+- `failure_taxonomy` with bounded reasons:
+  `missing_from_residual`, `missing_from_origin`, `value_mismatch`,
+  `provenance_missing`, and `unclassified_universe_fact`;
+- `canonicalization` for singleton intervals, finite ranges, Top, bottom/empty
+  or unknown strings, and location-sensitive memory cells;
+- `residual_to_origin` and `origin_to_residual` bidirectional checks;
+- `oracle_identity` recording frozen-origin/premerge-observer lineage.
+
+The oracle-suite witness status and suite status are gated on
+`full_itv_semantic_relation.status`, not on the legacy selected-observation
+relation.
+
+## Selected-observation diagnostic relation
+
+The older selected-observation relation remains as diagnostic/compatibility
+evidence:
+
+```text
+link(PE(I, m1), ..., PE(I, mn)) ≈_selected_obs selected_obs(I(m1 ⊕ ... ⊕ mn))
+```
+
+It is no longer the authoritative oracle-suite pass gate.
 
 ### `selected_obs` projection
 
@@ -71,16 +112,20 @@ The relation fails when any selected obligation is absent or inconsistent, inclu
 - shortcut leakage through premerge/global merge implementation paths;
 - mixed-role cycles, because cyclic fixpoint summary semantics are out of scope.
 
-This contract is `prototype-non-public`: it is a summary/checker relation for the current witness suite, not a final artifact schema, full memory model, cyclic summary semantics, or whole-program C equivalence proof.
+This diagnostic contract is `prototype-non-public`: it is a summary/checker
+view for the current witness suite, not the full-Itv pass gate, final artifact
+schema, full memory model, cyclic summary semantics, or whole-program C
+equivalence proof.
 
 ### Primary-linkage check vs oracle-suite relation
 
 There are two related checker outputs, and they intentionally make different claims:
 
 - `primary_linkage_observation_check` is a residual-internal invariant check for the two-module PE smoke witness. It validates provider-derived importer inputs, selected return/call-effect rows, phase order, and provenance. It does **not** perform an oracle comparison and therefore must not report `residual_to_oracle`/`oracle_to_residual` directions.
-- `selected_observation_relation` is emitted by the oracle suite only. It compares residual observations against premerge oracle/reference observations for the selected witness domains above.
+- `full_itv_semantic_relation` is emitted by the oracle suite and is the authoritative pass gate. It compares the full Itv evidence universe exposed by each witness against origin/premerge oracle evidence.
+- `selected_observation_relation` is emitted only under diagnostics/compatibility. It compares selected residual observations against selected premerge oracle/reference observations.
 
-This naming split is part of the claim boundary: the primary PE check establishes residual-linkage evidence quality, while the oracle suite establishes witness-bounded selected-observation agreement.
+This naming split is part of the claim boundary: the primary PE check establishes residual-linkage evidence quality, while the oracle suite establishes witness-bounded full Sparrow-Itv relation coverage and keeps selected observations as legacy diagnostics.
 
 ## Witnesses
 
@@ -145,8 +190,9 @@ Ambiguous provider choices still fail with diagnostics. Deterministic multiple-i
 
 ## Non-goals
 
-- No full whole-program semantic equivalence proof.
+- No whole-program semantic equivalence proof beyond the witness-bounded full Sparrow-Itv evidence universe.
 - No broad arbitrary-C coverage.
+- No Oct or Taint semantics.
 - No optimized or production-grade residual linker.
 - No final API freeze for the residual module/linker contract.
 - No final general memory/global/call-effect summary language; richer effect observations in the oracle suite remain witness-bounded prototype evidence.
@@ -188,11 +234,12 @@ The suite report is explicitly `prototype-non-public`.  Positive witnesses must 
 - residual linked artifact path;
 - premerge observer artifact path;
 - normalized residual and oracle observations;
-- relation result for residual-to-oracle and oracle-to-residual selected observations;
+- `full_itv_semantic_relation` with `semantic_universe_manifest`, bounded failure taxonomy, canonicalization, oracle identity, and bidirectional `residual_to_origin` / `origin_to_residual` checks;
+- selected-observation relation only under diagnostics/compatibility;
 - row/effect provenance into both artifact families;
 - named obligations with pass/fail status.
 
-The equivalence statement is witness-bounded and selected-observation-bounded.  The checker allows documented normalization for interval-compatible globals and pointer alias provenance; it does not claim arbitrary-C semantic equivalence.
+The relation statement is witness-bounded and full Sparrow-Itv scoped.  The checker allows documented Itv coverage normalization for interval-compatible final-table cells and records equality as not claimed when residual cells are over-approximations; it does not claim Oct, Taint, arbitrary-C, or whole-program semantic equivalence.
 
 ### Named obligations
 
@@ -205,7 +252,7 @@ The suite-level report includes these obligations:
 - `mixed_role_chain_matches_oracle`;
 - `no_premerge_implementation_shortcut`.
 
-Negative-case coverage is represented in the report for mismatched values/effects, missing global/pointer observations, ambiguous providers, invalid mixed-role propagation, shortcut leakage, missing oracle artifacts, witness identity mismatch, missing provenance, and mixed-role cycles.
+Negative-case coverage is represented in the report for mismatched values/effects, missing global/pointer observations, a non-selected Itv cell removal that fails the full relation while selected diagnostics still pass, ambiguous providers, invalid mixed-role propagation, shortcut leakage, missing oracle artifacts, witness identity mismatch, missing provenance, and mixed-role cycles.
 
 ## Topology support after the oracle-suite milestone
 

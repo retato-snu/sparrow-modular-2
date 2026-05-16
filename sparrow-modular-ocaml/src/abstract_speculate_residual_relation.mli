@@ -56,6 +56,7 @@ val parse_singleton_interval_value : string -> int option
 val interval_contains_value : string -> int -> bool
 val contains : string -> string -> bool
 val selected_observation_relation_json : witness_id:string -> residual:Yojson.Safe.t -> oracle:Yojson.Safe.t -> Yojson.Safe.t
+val full_itv_semantic_relation_json : witness_id:string -> residual:Yojson.Safe.t -> oracle:Yojson.Safe.t -> Yojson.Safe.t
 val primary_linkage_ok : Yojson.Safe.t -> bool
 val primary_linkage_check_json : Yojson.Safe.t -> Yojson.Safe.t
 val oracle_suite_obligations :

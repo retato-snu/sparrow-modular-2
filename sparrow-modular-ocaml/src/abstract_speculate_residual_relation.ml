@@ -644,6 +644,366 @@ let selected_observation_relation_json ~witness_id ~residual ~oracle =
   let residual_obs, oracle_obs = return_observations witness_id residual oracle in
   comparison_to_json (relation_from_observations residual_obs oracle_obs)
 
+(** Full Sparrow-Itv semantic relation.
+
+    This is still a prototype/internal report surface, but unlike the selected
+    relation above it inventories the complete Itv evidence exposed by the
+    accepted residual-linking slice: final input/output table cells, semantic
+    exports, linked-environment/call-effect facts, completion evidence, and
+    oracle lineage.  The comparison is intentionally Itv-scoped and
+    witness-bounded; it is not a product-domain, Oct/Taint, arbitrary-C, or
+    whole-program C equivalence claim. *)
+
+let failure_taxonomy_json =
+  `List [
+    `String "missing_from_residual";
+    `String "missing_from_origin";
+    `String "value_mismatch";
+    `String "provenance_missing";
+    `String "unclassified_universe_fact";
+  ]
+
+let canonicalization_json =
+  `Assoc [
+    "scheme", `String "location-indexed-itv-cell-coverage/v1";
+    "table_key", `String "final_input_table|final_output_table";
+    "row_key", `String "node when available; linked_module_id is provenance only";
+    "cell_key", `String "location plus canonical Itv value";
+    "singleton_intervals", `String "([n,n], ...) and bare integer n normalize to singleton interval bounds";
+    "ranges", `String "finite ([lo,hi], ...) ranges compare by interval containment";
+    "top", `String "([-oo,+oo], ...) is treated as Top and may cover finite origin Itv cells";
+    "bottom_empty_unknown", `String "bot/empty/unknown values are retained as deterministic strings and compare by exact value";
+    "location_sensitive_memory", `String "locations remain part of every semantic key";
+  ]
+
+let full_itv_non_claims_json =
+  `List [
+    `String "no Oct semantics";
+    `String "no Taint semantics";
+    `String "no arbitrary-C or whole-program semantic equivalence";
+    `String "no origin Sparrow modification";
+    `String "prototype-non-public relation schema";
+  ]
+
+let canonical_value_json value =
+  let trimmed = String.trim value in
+  match parse_interval_value trimmed with
+  | Some (lo, hi) when lo = hi ->
+      `Assoc ["kind", `String "singleton"; "lo", `Int lo; "hi", `Int hi; "raw", `String trimmed]
+  | Some (lo, hi) ->
+      `Assoc ["kind", `String "range"; "lo", `Int lo; "hi", `Int hi; "raw", `String trimmed]
+  | None when contains trimmed "[-oo, +oo]" || contains trimmed "[-oo,+oo]" ->
+      `Assoc ["kind", `String "top"; "raw", `String trimmed]
+  | None when trimmed = "" ->
+      `Assoc ["kind", `String "empty"; "raw", `String trimmed]
+  | None when contains trimmed "bot" ->
+      `Assoc ["kind", `String "symbolic-or-bottom"; "raw", `String trimmed]
+  | None ->
+      `Assoc ["kind", `String "opaque"; "raw", `String trimmed]
+
+let interval_bounds_for_coverage value =
+  let trimmed = String.trim value in
+  if contains trimmed "[-oo, +oo]" || contains trimmed "[-oo,+oo]" then Some None
+  else parse_interval_value trimmed |> Option.map (fun bounds -> Some bounds)
+
+let value_covers residual_value origin_value =
+  residual_value = origin_value ||
+  match interval_bounds_for_coverage residual_value, interval_bounds_for_coverage origin_value with
+  | Some None, Some _ -> true
+  | Some (Some (rlo, rhi)), Some (Some (olo, ohi)) -> rlo <= olo && ohi <= rhi
+  | _ -> false
+
+let cell_fact ~side ~table_name ~row cell =
+  let node = string_field "node" row in
+  let module_id = string_field "linked_module_id" row in
+  let location = string_field "location" cell in
+  let value = string_field "value" cell in
+  `Assoc [
+    "side", `String side;
+    "category", `String "final-table-cell";
+    "table", `String table_name;
+    "node", `String node;
+    "linked_module_id", `String module_id;
+    "location", `String location;
+    "value", `String value;
+    "canonical_value", canonical_value_json value;
+    "provenance", `String (side ^ "." ^ table_name ^ ":" ^ node ^ ":" ^ location);
+  ]
+
+let table_cell_facts ~side tables =
+  tables |> List.concat_map (fun (table_name, rows) ->
+    rows |> List.concat_map (fun row ->
+      row_memory row |> List.map (cell_fact ~side ~table_name ~row)))
+
+let fact_location fact = string_field "location" fact
+let fact_value fact = string_field "value" fact
+let fact_table fact = string_field "table" fact
+
+let fact_has_provenance fact = string_field "provenance" fact <> ""
+
+let facts_for_location location facts =
+  facts |> List.filter (fun fact -> fact_location fact = location)
+
+let any_fact_covers facts target =
+  facts |> List.exists (fun fact ->
+    fact_location fact = fact_location target &&
+    value_covers (fact_value fact) (fact_value target))
+
+let full_itv_direction_json ~direction ~pass ~matched ~missing ~failures =
+  let direction_label =
+    match direction with
+    | Residual_to_oracle -> "residual_to_origin"
+    | Oracle_to_residual -> "origin_to_residual"
+  in
+  `Assoc [
+    "direction", `String direction_label;
+    "status", `String (pass_status pass);
+    "comparison_kind", `String "location-indexed Itv coverage over final input/output table cells";
+    "matched_facts", `List matched;
+    "missing_facts", `List missing;
+    "failures", `List (List.map failure_to_json failures);
+  ]
+
+let semantic_export_facts witness_id residual =
+  semantic_exports residual |> List.map (fun export ->
+    let name = string_field "export_name" export in
+    let value = string_of_int (int_field "return_value" export) in
+    `Assoc [
+      "side", `String "residual";
+      "category", `String "semantic-export-return";
+      "table", `String "semantic_exports";
+      "node", `String (string_field "return_node" export);
+      "linked_module_id", `String (string_field "provider_module" export);
+      "location", `String (return_location name);
+      "symbol", `String name;
+      "value", `String value;
+      "canonical_value", canonical_value_json value;
+      "provenance", `String ("semantic_exports:" ^ witness_id ^ ":" ^ name);
+      "artifact_path", `String (string_field "provider_artifact_path" export);
+    ])
+
+let semantic_export_failures witness_id residual oracle =
+  semantic_exports residual |> List.concat_map (fun export ->
+    let name = string_field "export_name" export in
+    let residual_value = int_field "return_value" export in
+    let provenance_missing = string_field "provider_artifact_path" export = "" in
+    let value_failure =
+      match oracle_return_value oracle name with
+      | None -> [fail Return_value Residual_to_oracle "missing_from_origin" ("semantic_exports:" ^ witness_id ^ ":" ^ name)]
+      | Some oracle_value when oracle_value <> residual_value ->
+          [fail Return_value Residual_to_oracle "value_mismatch" ("semantic_exports:" ^ witness_id ^ ":" ^ name)]
+      | Some _ -> []
+    in
+    let provenance_failure =
+      if provenance_missing then [fail Provenance Residual_to_oracle "provenance_missing" ("semantic_exports:" ^ witness_id ^ ":" ^ name)]
+      else []
+    in
+    value_failure @ provenance_failure)
+
+let linked_environment_facts witness_id residual =
+  linked_environment residual |> List.map (fun entry ->
+    let export_name = string_field "export_name" entry in
+    let linked_return_value = string_of_int (int_field "linked_return_value" entry) in
+    `Assoc [
+      "side", `String "residual";
+      "category", `String "linked-environment-binding";
+      "table", `String "linked_environment";
+      "node", `String (string_field "importer_extern_root" entry);
+      "linked_module_id", `String (string_field "importer_module" entry);
+      "location", `String (string_field "importer_module" entry ^ "<-" ^ string_field "provider_module" entry);
+      "symbol", `String export_name;
+      "value", `String linked_return_value;
+      "canonical_value", canonical_value_json linked_return_value;
+      "provenance", `String ("linked_environment:" ^ witness_id ^ ":" ^ export_name);
+    ])
+
+let linked_call_effect_facts witness_id residual =
+  list_field "linked_stage2_input_derivation" residual |> List.map (fun entry ->
+    let export_name = string_field "export_name" entry in
+    `Assoc [
+      "side", `String "residual";
+      "category", `String "linked-call-effect";
+      "table", `String "linked_stage2_input_derivation";
+      "node", `String (string_field "importer_extern_root" entry);
+      "linked_module_id", `String (string_field "importer_module" entry);
+      "location", `String (string_field "importer_extern_root" entry);
+      "symbol", `String export_name;
+      "value", `String (string_field "effect_reason" entry ^ ":" ^ string_of_int (int_field "linked_return_value" entry));
+      "canonical_value", `Assoc ["kind", `String "call-effect"; "raw", `String (string_field "effect_reason" entry)];
+      "provenance", `String ("linked_stage2_input_derivation:" ^ witness_id ^ ":" ^ export_name);
+    ])
+
+let completion_status_facts witness_id residual oracle =
+  let oracle_completion = member "completion" (member "projection" oracle) in
+  let residual_analyzer_ran = bool_field "linked_residual_analyzer_ran" residual in
+  let origin_worklist_drained = bool_field "worklist_drained" oracle_completion in
+  [
+    `Assoc [
+      "side", `String "residual";
+      "category", `String "completion-status";
+      "table", `String "linked_residual_status";
+      "node", `String witness_id;
+      "linked_module_id", `String "";
+      "location", `String "linked_residual_analyzer_ran";
+      "value", `String (string_of_bool residual_analyzer_ran);
+      "canonical_value", `Assoc ["kind", `String "boolean"; "raw", `Bool residual_analyzer_ran];
+      "provenance", `String ("residual.status:" ^ witness_id);
+    ];
+    `Assoc [
+      "side", `String "origin";
+      "category", `String "completion-status";
+      "table", `String "projection.completion";
+      "node", `String witness_id;
+      "linked_module_id", `String "";
+      "location", `String "origin_worklist_drained";
+      "value", `String (string_of_bool origin_worklist_drained);
+      "canonical_value", `Assoc ["kind", `String "boolean"; "raw", `Bool origin_worklist_drained];
+      "provenance", `String ("origin.completion:" ^ witness_id);
+    ];
+  ]
+
+let full_itv_evidence_failures witness_id residual oracle =
+  let oracle_completion = member "completion" (member "projection" oracle) in
+  []
+  |> fun fs -> if linked_environment residual = [] then fail Provider_binding Residual_to_oracle "missing_from_residual" ("linked_environment:" ^ witness_id) :: fs else fs
+  |> fun fs -> if list_field "linked_stage2_input_derivation" residual = [] then fail Call_effect Residual_to_oracle "missing_from_residual" ("linked_stage2_input_derivation:" ^ witness_id) :: fs else fs
+  |> fun fs -> if list_field "phase_log" residual = [] then fail Phase_ordering Residual_to_oracle "missing_from_residual" ("phase_log:" ^ witness_id) :: fs else fs
+  |> fun fs -> if not (bool_field "linked_residual_analyzer_ran" residual) then fail Call_effect Residual_to_oracle "unclassified_universe_fact" ("linked_residual_analyzer_ran:" ^ witness_id) :: fs else fs
+  |> fun fs -> if not (bool_field "worklist_drained" oracle_completion) then fail Call_effect Oracle_to_residual "unclassified_universe_fact" ("projection.completion:" ^ witness_id) :: fs else fs
+
+let manifest_entry ~classification fact =
+  `Assoc [
+    "classification", `String classification;
+    "category", member "category" fact;
+    "table", member "table" fact;
+    "node", member "node" fact;
+    "location", member "location" fact;
+    "value", member "value" fact;
+    "canonical_value", member "canonical_value" fact;
+    "provenance", member "provenance" fact;
+  ]
+
+let oracle_identity_json oracle =
+  `Assoc [
+    "kind", `String "origin-sparrow-premerge-observer";
+    "scope", `String (string_field "scope" oracle);
+    "domain_instance", `String (string_field "domain_instance" oracle);
+    "group", `String (string_field "group" oracle);
+    "source", member "source" oracle;
+    "lineage", member "lineage" oracle;
+    "baseline_immutability_guard", `String "verify with git diff --exit-code -- sparrow";
+  ]
+
+let full_itv_semantic_relation_json ~witness_id ~residual ~oracle =
+  let residual_table_facts = table_cell_facts ~side:"residual" (linked_tables residual) in
+  let oracle_table_facts = table_cell_facts ~side:"origin" (oracle_tables oracle) in
+  let export_facts = semantic_export_facts witness_id residual in
+  let evidence_facts =
+    linked_environment_facts witness_id residual @
+    linked_call_effect_facts witness_id residual @
+    completion_status_facts witness_id residual oracle
+  in
+  let residual_facts = residual_table_facts @ export_facts in
+  let oracle_locations = oracle_table_facts |> List.map fact_location |> sort_uniq in
+  let relevant_residual_facts =
+    residual_facts
+    |> List.filter (fun fact ->
+      List.mem (fact_location fact) oracle_locations ||
+      string_field "category" fact = "semantic-export-return")
+  in
+  let origin_missing =
+    oracle_table_facts |> List.filter (fun origin_fact ->
+      not (any_fact_covers residual_facts origin_fact))
+  in
+  let origin_failures =
+    origin_missing |> List.map (fun fact ->
+      fail Memory_location Oracle_to_residual "missing_from_residual"
+        ("origin." ^ fact_table fact ^ ":" ^ fact_location fact))
+  in
+  let residual_missing =
+    relevant_residual_facts |> List.filter (fun residual_fact ->
+      facts_for_location (fact_location residual_fact) oracle_table_facts = [])
+  in
+  let residual_failures =
+    residual_missing |> List.map (fun fact ->
+      fail Memory_location Residual_to_oracle "missing_from_origin"
+        ("residual." ^ fact_table fact ^ ":" ^ fact_location fact))
+  in
+  let provenance_failures =
+    if List.for_all fact_has_provenance (residual_facts @ oracle_table_facts @ evidence_facts) then []
+    else [fail Provenance Residual_to_oracle "provenance_missing" "semantic_universe_manifest"]
+  in
+  let export_failures = semantic_export_failures witness_id residual oracle in
+  let evidence_failures = full_itv_evidence_failures witness_id residual oracle in
+  let r2o_failures = residual_failures @ provenance_failures @ export_failures @ evidence_failures in
+  let o2r_failures = origin_failures in
+  let r2o_pass = r2o_failures = [] in
+  let o2r_pass = o2r_failures = [] in
+  let matched_origin = oracle_table_facts |> List.filter (any_fact_covers residual_facts) in
+  let matched_residual = relevant_residual_facts |> List.filter (fun fact ->
+    facts_for_location (fact_location fact) oracle_table_facts <> [])
+  in
+  let compared_facts = matched_origin @ matched_residual @ evidence_facts in
+  let semantic_universe_manifest =
+    `Assoc [
+      "witness_id", `String witness_id;
+      "expected_fact_source", `String "origin/premerge final input/output tables plus residual semantic exports, linked environment, call effects, completion, and provenance";
+      "compared", `List (List.map (manifest_entry ~classification:"compared") compared_facts);
+      "missing", `List (List.map (manifest_entry ~classification:"missing_from_residual") origin_missing @
+                         List.map (manifest_entry ~classification:"missing_from_origin") residual_missing);
+      "intentionally_excluded", `List [
+        `Assoc ["category", `String "domain"; "reason", `String "Oct excluded by user scope"];
+        `Assoc ["category", `String "domain"; "reason", `String "Taint excluded by user scope"];
+        `Assoc ["category", `String "claim"; "reason", `String "arbitrary-C/whole-program equivalence excluded"];
+      ];
+      "expected_but_not_emitted", `List [];
+    ]
+  in
+  let residual_to_origin =
+    full_itv_direction_json ~direction:Residual_to_oracle ~pass:r2o_pass
+      ~matched:matched_residual ~missing:residual_missing ~failures:r2o_failures
+  in
+  let origin_to_residual =
+    full_itv_direction_json ~direction:Oracle_to_residual ~pass:o2r_pass
+      ~matched:matched_origin ~missing:origin_missing ~failures:o2r_failures
+  in
+  let full_pass = r2o_pass && o2r_pass in
+  `Assoc [
+    "relation", `String "full-sparrow-itv-semantic-relation";
+    "domain", `String "sparrow-itv";
+    "status", `String (pass_status full_pass);
+    "claim_scope", `String "witness-bounded full Itv evidence exposed by the residual-linking oracle suite; exact full-table equality is not claimed when residual evidence is a documented over-approximation";
+    "semantic_universe", `List [
+      `String "final_input_table cells";
+      `String "final_output_table cells";
+      `String "semantic exports";
+      `String "linked environment bindings";
+      `String "linked call/effect derivation";
+      `String "completion/status evidence";
+      `String "provenance and oracle identity";
+    ];
+    "semantic_universe_manifest", semantic_universe_manifest;
+    "failure_taxonomy", failure_taxonomy_json;
+    "canonicalization", canonicalization_json;
+    "oracle_identity", oracle_identity_json oracle;
+    "non_claims", full_itv_non_claims_json;
+    "residual_to_origin", residual_to_origin;
+    "origin_to_residual", origin_to_residual;
+    "bidirectional_status", `Assoc [
+      "residual_to_origin_evidence", `String (pass_status r2o_pass);
+      "origin_to_residual_coverage", `String (pass_status o2r_pass);
+      "equal", `Bool false;
+      "equality_claim", `String "not claimed for over-approximating residual Itv table cells";
+    ];
+    "summary", `Assoc [
+      "residual_fact_count", `Int (List.length residual_facts);
+      "origin_fact_count", `Int (List.length oracle_table_facts);
+      "compared_fact_count", `Int (List.length compared_facts);
+      "failure_count", `Int (List.length r2o_failures + List.length o2r_failures);
+    ];
+    "failures", `List (List.map failure_to_json (r2o_failures @ o2r_failures));
+  ]
+
 let return_obligations witness_id residual oracle =
   semantic_exports residual
   |> List.map (fun export ->
