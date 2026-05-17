@@ -26,6 +26,7 @@
   abstract_speculate_residual_linking_pe_check
   abstract_speculate_residual_linking_oracle_suite_dump
   abstract_speculate_residual_linking_oracle_suite_check
+  abstract_speculate_residual_solver_unit
   abstract_speculate_staged_transfer
   abstract_speculate_staged_lattice
   abstract_speculate_staged_bta_fixpoint)
@@ -204,6 +205,7 @@
   abstract_speculate_metaocaml_sparse_module_boundary.bc
   abstract_speculate_metaocaml_sparse_shape_witness.bc
   abstract_speculate_metaocaml_sparse_blind_equal.bc
+  abstract_speculate_residual_solver_unit.bc
   abstract_speculate_staged_transfer.bc
   abstract_speculate_staged_lattice.bc
   abstract_speculate_staged_bta_fixpoint.bc
@@ -231,6 +233,7 @@
    (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_metaocaml_sparse_module_boundary.bc --artifact-dir $root/_build/real-sparrow/abstract-speculate-metaocaml-sparse/active")
    (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_metaocaml_sparse_shape_witness.bc --artifact-dir $root/_build/real-sparrow/abstract-speculate-metaocaml-sparse/active")
    (run ./abstract_speculate_metaocaml_sparse_blind_equal.bc)
+   (run ./abstract_speculate_residual_solver_unit.bc)
    (run ./abstract_speculate_staged_transfer.bc)
    (run ./abstract_speculate_staged_lattice.bc)
    (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_staged_bta_fixpoint.bc --artifact-dir $root/_build/real-sparrow/abstract-speculate-metaocaml-sparse/active")

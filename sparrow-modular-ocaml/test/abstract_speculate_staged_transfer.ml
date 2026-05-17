@@ -23,6 +23,9 @@ let output_entries output =
 let execution_entries result =
   output_entries result.MetaSparse.stage2_output
 
+let execution_log result =
+  result.MetaSparse.stage2_output.T.execution_log
+
 let string_field name = function
   | `Assoc fields -> (match List.assoc_opt name fields with Some (`String s) -> s | _ -> "")
   | _ -> ""
@@ -158,6 +161,27 @@ let require_stage2_input_mutation_gates call_result =
   require_value ~semantic:"x := tmp" ~value:7 changed_entries;
   require_value ~semantic:"y := x+1" ~value:8 changed_entries
 
+let require_solver_backed_stage2 result =
+  let log = execution_log result in
+  expect (bool_field "residual_solver_run" log)
+    "stage2 must run residual solver";
+  expect (bool_field "solver_backed_residual_fixpoint" log)
+    "stage2 must report solver-backed residual fixpoint";
+  expect (not (bool_field "overlay_only" log))
+    "stage2 must not be overlay-only";
+  expect (bool_field "worklist_drained" log)
+    "residual solver worklist must drain";
+  expect (int_field "residual_equation_count" log > 0)
+    "stage2 must materialize residual equations";
+  expect (int_field "solver_iteration_count" log > 1)
+    "stage2 residual solver must iterate to a stable fixpoint, not execute once";
+  expect (int_field "state_read_count" log > 0)
+    "stage2 residual equations must read solver state";
+  expect (int_field "seed_input_read_count" log > 0)
+    "stage2 residual equations must report dynamic input seed reads";
+  expect (bool_field "equation_apply_reads_solver_state" log)
+    "stage2 residual equations did not report solver-state reads"
+
 let require_guard_mutation_gate branch_result =
   let changed_entries =
     execute_mutated branch_result (set_all_effect_values branch_result.MetaSparse.stage2_input (-7))
@@ -180,6 +204,7 @@ let () =
   expect (has_event "dynamic-arithmetic-created-D-during-transfer" components)
     "production transfer must create D for arithmetic depending on extern result";
   let entries = execution_entries call_result in
+  require_solver_backed_stage2 call_result;
   require_executed_semantic
     ~event:"extern-call-result-created-D-during-transfer"
     ~semantic:"call result" entries;

@@ -153,6 +153,17 @@ let residual_log_ok log =
   ((not needs_dynamic_transfer) || positive_int_field "typed_residual_arithmetic_count" log) &&
   ((not needs_dynamic_transfer) || positive_int_field "typed_residual_guard_count" log) &&
   false_field "stage2_sparse_recompute" log
+  &&
+  bool_field "residual_solver_run" log &&
+  bool_field "solver_backed_residual_fixpoint" log &&
+  false_field "overlay_only" log &&
+  bool_field "worklist_drained" log &&
+  positive_int_field "residual_equation_count" log &&
+  positive_int_field "solver_iteration_count" log &&
+  positive_int_field "state_read_count" log &&
+  positive_int_field "seed_input_read_count" log &&
+  bool_field "equation_apply_reads_solver_state" log &&
+  list_field "exact_cell_dependencies" log <> []
 
 let residual_executable_ok entry =
   (string_field "status" "pass" entry || field "status" entry = None) &&
@@ -204,6 +215,15 @@ let residual_audit_mutation_results path =
         "top_substitution=true", set_field "top_substitution" (`Bool true) log;
         "whole_row_dynamic_wrapper=true", set_field "whole_row_dynamic_wrapper" (`Bool true) log;
         "linked_facts_prelink=true", set_field "linked_facts_prelink" (`Bool true) log;
+        "residual_solver_run=false", set_field "residual_solver_run" (`Bool false) log;
+        "solver_backed_residual_fixpoint=false", set_field "solver_backed_residual_fixpoint" (`Bool false) log;
+        "overlay_only=true", set_field "overlay_only" (`Bool true) log;
+        "worklist_drained=false", set_field "worklist_drained" (`Bool false) log;
+        "residual_equation_count=0", set_field "residual_equation_count" (`Int 0) log;
+        "state_read_count=0", set_field "state_read_count" (`Int 0) log;
+        "seed_input_read_count=0", set_field "seed_input_read_count" (`Int 0) log;
+        "equation_apply_reads_solver_state=false", set_field "equation_apply_reads_solver_state" (`Bool false) log;
+        "exact_cell_dependencies empty", set_field "exact_cell_dependencies" (`List []) log;
       ]
       |> List.map (fun (name, mutated_log) ->
            let rejected = not (residual_log_ok mutated_log) in
@@ -262,11 +282,15 @@ let implementation_evidence root =
   let residual_path = project_path root "src/abstract_speculate_residual_value.ml" in
   let stage_types_path = project_path root "src/abstract_speculate_stage_types.ml" in
   let stage2_path = project_path root "src/abstract_speculate_stage2_input.ml" in
+  let solver_path = project_path root "src/abstract_speculate_residual_solver.ml" in
+  let solver_unit_path = project_path root "test/abstract_speculate_residual_solver_unit.ml" in
   let pe = if Sys.file_exists pe_path then read_file pe_path else "" in
   let meta = if Sys.file_exists meta_path then read_file meta_path else "" in
   let residual = if Sys.file_exists residual_path then read_file residual_path else "" in
   let stage_types = if Sys.file_exists stage_types_path then read_file stage_types_path else "" in
   let stage2 = if Sys.file_exists stage2_path then read_file stage2_path else "" in
+  let solver = if Sys.file_exists solver_path then read_file solver_path else "" in
+  let solver_unit = if Sys.file_exists solver_unit_path then read_file solver_unit_path else "" in
   let checks = [
     evidence_item ~name:"direct_module_frontend"
       (contains meta "Real_sparrow_frontend.global_for_module source" && not (contains meta "global_for_files"))
@@ -289,9 +313,25 @@ let implementation_evidence root =
       (contains stage_types "type 'a ps =" &&
        contains stage_types "| D of 'a Trx.code" &&
        contains residual "T.D component.T.component_code" &&
-       contains residual "run_components" &&
-       contains residual "(.~head .~input_code)")
-      "Main residual path wires S/D component code into generated analyzer code instead of reporting metadata only";
+       contains residual "residual_equations" &&
+       contains residual "~apply:(fun state input ->" &&
+       contains residual "T.residual_state_lookup state" &&
+       contains residual ".~apply input")
+      "Main residual path wires S/D component code into state-reading solver equations instead of reporting metadata only";
+    evidence_item ~name:"residual_equations_read_solver_state"
+      (contains stage_types "type residual_state_view = {" &&
+       contains stage_types "read_int : residual_cell_id -> int option" &&
+       contains stage_types "apply : residual_state_view -> stage2_input -> residual_component_result" &&
+       contains solver "let result = equation.T.apply (make_state_view state state_read_count) input" &&
+       contains solver "\"state_read_count\", `Int !state_read_count" &&
+       contains solver "\"seed_input_read_count\", `Int !seed_input_read_count" &&
+       contains solver "\"equation_apply_reads_solver_state\", `Bool (!state_read_count > 0)" &&
+       contains solver "\"exact_cell_dependencies\"" &&
+       contains solver_unit "read_required_int state x_cell \"x\" + 1" &&
+       contains solver_unit "read_required_int state y_cell \"y\"" &&
+       contains solver_unit "expect (not (bool_field \"seed_input_read\" y_execution))" &&
+       contains solver_unit "expect (not (bool_field \"seed_input_read\" ret_execution))")
+      "Residual equations are applied over solver state; dependent unit equations read solved cells instead of recomputing from stage2 input";
     evidence_item ~name:"typed_shape_witness_pairs_code"
       (contains stage_types "Typed_component of staged_residual_component" &&
        contains meta "StageT.Loop_shape" &&

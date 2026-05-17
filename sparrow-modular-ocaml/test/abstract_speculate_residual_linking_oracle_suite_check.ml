@@ -40,6 +40,19 @@ let project_path rel =
     else direct
 let semantic_exports linked = list_field "semantic_exports" linked
 
+let external_summary_ok summary =
+  string_field "schema_version" summary = "abstract-speculate-external-summary/v1" &&
+  member "extern_scalar_value" summary <> `Null &&
+  member "function_return_summary" summary <> `Null &&
+  member "global_write_summary_placeholder" summary <> `Null &&
+  string_field "derivation_source" (member "provenance" summary) = "provider-stage2-output"
+
+let require_external_summaries witness_id residual =
+  let summaries = list_field "external_summaries" residual in
+  expect (summaries <> []) (witness_id ^ ": missing ExternalSummary v1 entries");
+  expect (List.for_all external_summary_ok summaries)
+    (witness_id ^ ": malformed ExternalSummary v1 entries")
+
 let source_guard_obligation_for_paths witness_id residual_sources suite_sources =
   let forbidden = ["Real_sparrow_frontend." ^ "global_for_" ^ "files"; "Mergecil." ^ "merge"; "real_sparrow_" ^ "premerge_linked_observer"] in
   let residual_clean =
@@ -94,6 +107,7 @@ let witness_report witness =
     (witness_id ^ ": residual linked artifact identity mismatch");
   expect (string_field "group" oracle = witness_id)
     (witness_id ^ ": oracle artifact identity mismatch");
+  require_external_summaries witness_id residual;
   let obligations = obligations_for witness_id category residual oracle in
   let residual_obs, oracle_obs = normalized_observations witness_id residual oracle in
   let selected_relation = Relation.selected_observation_relation_json ~witness_id ~residual ~oracle in

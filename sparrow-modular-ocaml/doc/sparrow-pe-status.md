@@ -9,7 +9,8 @@ directory is the staged/modular experiment.
 
 The current implementation is a MetaOCaml staged, module-local PE prototype for
 a real-Sparrow ItvDom sparse-fixpoint slice, with executable `Trx.code`
-residual components and witness-bounded residual-linking evidence.
+residual equations solved by a stage-2 residual fixpoint kernel, plus
+witness-bounded residual-linking evidence.
 
 It is not a complete partial evaluator for all of Sparrow.
 
@@ -45,7 +46,8 @@ Oct/Taint semantics, or the full Sparrow product analyzer.
 | Staged cell representation | Implemented | `src/abstract_speculate_stage_types.ml` uses `S` / `D of Trx.code`. |
 | Module-local staged sparse PE | Implemented for the current slice | `src/abstract_speculate_meta_sparse.ml`. |
 | Executable residual analyzer values | Implemented | `src/abstract_speculate_residual_value.ml` builds `Trx.code`; stage 2 uses `Runcode.run`. |
-| Stage-2 dynamic input validation | Implemented | `src/abstract_speculate_stage2_input.ml` validates source hash and extern roots. |
+| Solver-backed residual equations (Option A) | Implemented for current staged-cell slice | `src/abstract_speculate_stage_types.ml` defines residual equations; `src/abstract_speculate_residual_solver.ml` runs a deterministic bounded worklist and reports convergence evidence. |
+| Stage-2 dynamic input validation | Implemented | `src/abstract_speculate_stage2_input.ml` validates source hash and extern roots before solving residual equations. |
 | BTA/fact provenance reports | Implemented | `abstract_speculate_metaocaml_sparse.*.json` reports. |
 | Blind static-projection convergence guard | Implemented | Residual code growth is not used as the fixpoint convergence criterion. |
 | First residual-linking prototype | Implemented for bounded witnesses | `src/abstract_speculate_residual_linker.ml`, `@abstract_speculate_residual_linking_pe`. |
@@ -59,7 +61,7 @@ Oct/Taint semantics, or the full Sparrow product analyzer.
 | Full product-domain staging | The accepted staged semantics are still Itv-focused; other product components are not generally residualized. | Product-domain fidelity is required before broad Sparrow claims. |
 | Oct/Taint semantic preservation | The full relation is Itv-scoped only. | Product-domain claims require separate evidence and tests. |
 | Arbitrary-C semantic preservation | Fixtures and oracle-suite witnesses bound the evidence. | Current results are not a theorem for all C modules. |
-| General residual summary language | Return/global/pointer observations are witness-bounded. | Broader linking needs a typed effect/summary algebra. |
+| General residual summary language | ExternalSummary v1 exists for scalar/function-return handoff with a global-write placeholder, but return/global/pointer observations remain witness-bounded. | Broader linking still needs a richer typed effect/summary algebra. |
 | Cyclic residual linking | Mixed-role cycles are rejected. | Cycles require an explicit linked residual fixpoint semantics. |
 | Whole-program residual global fixpoint | The residual linker does not rerun a global sparse fixpoint. | Needed for a stronger `link(PE(I,m),d)` equivalence claim. |
 | Full dynamic control residualization | Loop/branch shape witnesses exist, but statement-level dynamic control coverage is limited. | Needed for larger program classes. |
@@ -69,7 +71,39 @@ Oct/Taint semantics, or the full Sparrow product analyzer.
 ## Residual-linking claim boundary
 
 The residual-linking prototype composes independently produced module-local
-residual analyzers.  It currently supports deterministic acyclic function
+residual analyzers.  The primary stage-2 path is now Option A: module-local
+residual equations are generated from executable staged cells, initialized from
+validated dynamic extern/link facts, solved to a bounded worklist fixpoint, and
+then materialized as final input/output rows.  The older component-overlay view is
+kept only as compatibility evidence inside equation bodies; solver-backed reports
+must say `residual_solver_run=true`, `solver_backed_residual_fixpoint=true`,
+`worklist_drained=true`, and `overlay_only=false`.
+
+### Review-locked Option A obligations
+
+This document intentionally does **not** claim that any stage-2 component
+closure execution is sufficient PE evidence.  The Option A claim is locked to
+the solver-state contract:
+
+1. `residual_equation.apply` must receive a `residual_state_view` as well as
+   validated `stage2_input`;
+2. dependent residual equations must read prior residual cells through that
+   state view rather than recomputing only from dynamic input;
+3. reports must reject the claim when `state_read_count = 0`,
+   `seed_input_read_count = 0`, `equation_apply_reads_solver_state=false`, or
+   `exact_cell_dependencies=[]`;
+4. unit/review fixtures must fail if a chain such as `n -> x -> y -> ret`
+   computes `y` or `ret` directly from `stage2_input` instead of through solver
+   state; and
+5. compatibility component execution inside an equation body may explain the
+   current implementation bridge, but it cannot by itself support the Option A
+   residual-fixpoint claim.
+
+The strongest implementation statement remains `solve(E_m, d) ⊒ I(m⊕d)` for
+the checked witness universe.  Equality, arbitrary-C coverage, cyclic linked
+residual solving, and full product-domain Sparrow PE remain out of scope.
+
+It currently supports deterministic acyclic function
 bindings, including multiple provider/import bindings and a mixed importer /
 provider role chain.  It rejects ambiguous provider choices and cyclic mixed-role
 topologies.
@@ -128,9 +162,10 @@ make the current prototype easier to evaluate:
 
 1. stabilize and commit the residual-linking oracle-suite artifacts;
 2. keep the full Sparrow-Itv relation schema documented and prototype/non-public;
-3. introduce a small typed summary/effect language for returns, globals, pointer
-   writes, and provenance;
-4. factor residual-linking scheduling into an explicit acyclic dependency graph;
+3. extend `ExternalSummary v1` beyond scalar/function-return handoff into richer
+   globals, pointer writes, and provenance;
+4. continue factoring residual-linking scheduling into explicit acyclic dependency
+   graph evidence and keep the stage-2 residual solver as the primary runtime;
 5. keep cycles rejected until a linked residual fixpoint semantics is designed.
 
 Only after that should the implementation broaden beyond the current ItvDom

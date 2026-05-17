@@ -96,13 +96,39 @@ let make_component
     component_code;
   }
 
-let rec run_components input_code components =
+let rec residual_equations components =
   match components with
   | [] -> .<[]>.
   | component :: rest ->
-      let head = component.T.component_code in
-      let tail = run_components input_code rest in
-      .<(.~head .~input_code) :: .~tail>.
+      let equation_id_c = Lift.lift_string ("residual-equation:" ^ component.T.residual_id) in
+      let table_c = Lift.lift_string component.T.table in
+      let node_c = Lift.lift_string component.T.node in
+      let location_c = Lift.lift_string component.T.location in
+      let dependency_id =
+        {
+          T.cell_table = component.T.table;
+          cell_node = component.T.node;
+          cell_location = component.T.location;
+        }
+      in
+      let dependency_key = T.residual_cell_key dependency_id in
+      let dependencies_c = Lift.lift_string_list [dependency_key] in
+      let apply = component.T.component_code in
+      let tail = residual_equations rest in
+      .<T.make_residual_equation
+          ~equation_id:.~equation_id_c
+          ~target_table:.~table_c
+          ~target_node:.~node_c
+          ~target_location:.~location_c
+          ~dependencies:.~dependencies_c
+          ~apply:(fun state input ->
+            ignore (T.residual_state_lookup state
+              (T.make_residual_cell_id
+                ~cell_table:.~table_c
+                ~cell_node:.~node_c
+                ~cell_location:.~location_c));
+            .~apply input)
+        :: .~tail>.
 
 let blind_witness ~static_input_rows ~static_output_rows ~residual_input_components ~residual_output_components ~control_components =
   let static_rows = static_input_rows @ static_output_rows in
@@ -138,9 +164,9 @@ let make_code
   let shape_witnesses_json_c = Lift.lift_json_list (T.shape_witness_json_list shape_witnesses) in
   let blind_equality_witness_c = Lift.lift_json blind_equality_witness in
   .<fun input ->
-    let residual_input_results = .~(run_components .<input>. residual_input_components) in
-    let residual_output_results = .~(run_components .<input>. residual_output_components) in
-    let control_results = .~(run_components .<input>. control_components) in
+    let residual_input_equations = .~(residual_equations residual_input_components) in
+    let residual_output_equations = .~(residual_equations residual_output_components) in
+    let control_equations = .~(residual_equations control_components) in
     Stage2.run_summary
       ~schema_version:.~schema_version_c
       ~module_id:.~module_id_c
@@ -149,9 +175,9 @@ let make_code
       ~extern_roots:.~extern_roots_c
       ~static_input_rows:.~static_input_rows_c
       ~static_output_rows:.~static_output_rows_c
-      ~residual_input_results
-      ~residual_output_results
-      ~control_results
+      ~residual_input_equations
+      ~residual_output_equations
+      ~control_equations
       ~shape_witnesses_json:.~shape_witnesses_json_c
       ~blind_equality_witness:.~blind_equality_witness_c
       input>.

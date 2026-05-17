@@ -32,6 +32,71 @@ type staged_residual_component = {
   component_code : (stage2_input -> residual_component_result) Trx.code;
 }
 
+type residual_cell_id = {
+  cell_table : string;
+  cell_node : string;
+  cell_location : string;
+}
+
+let make_residual_cell_id ~cell_table ~cell_node ~cell_location =
+  { cell_table; cell_node; cell_location }
+
+let residual_cell_key cell_id =
+  cell_id.cell_table ^ ":" ^ cell_id.cell_node ^ ":" ^ cell_id.cell_location
+
+type residual_value = Yojson.Safe.t
+
+type residual_cell = {
+  cell_id : residual_cell_id;
+  value : residual_value;
+}
+
+type residual_state_view = {
+  lookup : residual_cell_id -> residual_cell option;
+  read_int : residual_cell_id -> int option;
+}
+
+let residual_state_lookup state cell_id = state.lookup cell_id
+let residual_state_read_int state cell_id = state.read_int cell_id
+
+type residual_equation = {
+  equation_id : string;
+  target_table : string;
+  target_node : string;
+  target_location : string;
+  dependencies : string list;
+  apply : residual_state_view -> stage2_input -> residual_component_result;
+}
+
+type residual_dependency = {
+  source : string;
+  target : string;
+}
+
+type solver_event = Yojson.Safe.t
+
+type solver_result = {
+  solver_final_rows : Yojson.Safe.t list;
+  solver_events : solver_event list;
+  solver_log : Yojson.Safe.t;
+}
+
+let make_residual_equation
+    ~equation_id
+    ~target_table
+    ~target_node
+    ~target_location
+    ~dependencies
+    ~apply =
+  {
+    equation_id;
+    target_table;
+    target_node;
+    target_location;
+    dependencies;
+    apply;
+  }
+
 type shape_witness =
   | Typed_component of staged_residual_component
   | Loop_shape of string * string * shape_witness list

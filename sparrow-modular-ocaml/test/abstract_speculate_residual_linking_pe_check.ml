@@ -78,6 +78,27 @@ let linked_stage2_keys linked =
   | Some (`List xs) -> List.map to_string xs
   | _ -> []
 
+let external_summary_ok summary =
+  string_field "schema_version" summary = "abstract-speculate-external-summary/v1" &&
+  member "extern_scalar_value" summary <> `Null &&
+  member "function_return_summary" summary <> `Null &&
+  member "global_write_summary_placeholder" summary <> `Null &&
+  string_field "derivation_source" (member "provenance" summary) = "provider-stage2-output"
+
+let require_external_summaries linked =
+  let summaries = list_field "external_summaries" linked in
+  expect (summaries <> []) "missing ExternalSummary v1 entries";
+  expect (List.for_all external_summary_ok summaries)
+    "malformed ExternalSummary v1 entry";
+  list_field "semantic_exports" linked
+  |> List.iter (fun export ->
+       expect (external_summary_ok (member "external_summary" export))
+         "semantic export missing ExternalSummary v1");
+  list_field "linked_environment" linked
+  |> List.iter (fun entry ->
+       expect (external_summary_ok (member "external_summary" entry))
+         "linked environment missing ExternalSummary v1")
+
 type recomputed_evidence = {
   linked_execute_returned : bool;
   module_count : int;
@@ -362,6 +383,7 @@ let () =
   expect (bool_field "residual_linking_performed" linked) "residual linking was not performed";
   expect (bool_field "per_module_stage2_inputs_used" linked) "per-module stage2 input dispatch missing";
   expect (bool_field "provider_derived_importer_inputs_used" linked) "provider-derived importer inputs missing";
+  require_external_summaries linked;
   expect (bool_field "linked_facts_prelink" linked = false) "linked facts were used before PE";
   expect (bool_field "metadata_only_proof" linked = false) "metadata-only proof accepted";
   expect (list_field "declared_imports" linked <> []) "no parsed-CIL imports recorded";
@@ -372,6 +394,28 @@ let () =
   expect (bool_field "per_module_stage2_inputs_used" log) "linked output log missing per-module dispatch";
   expect (bool_field "provider_derived_importer_inputs_used" log)
     "linked output log missing provider-derived importer input dispatch";
+  expect (bool_field "linked_residual_solver_run" linked)
+    "linked artifact did not report solver-backed linked residual run";
+  expect (bool_field "linked_residual_solver_run" log)
+    "linked execution log did not report solver-backed residual run";
+  expect (bool_field "linked_solver_backed_residual_fixpoint" log)
+    "linked execution log did not report solver-backed residual fixpoint";
+  expect (bool_field "linked_worklist_drained" log)
+    "linked residual solver worklist did not drain";
+  expect (bool_field "linked_overlay_only" log = false)
+    "linked residual path reported overlay-only";
+  expect (int_field "linked_residual_equation_count" log > 0)
+    "linked residual path did not expose residual equations";
+  expect (int_field "linked_solver_iteration_count" log > 1)
+    "linked residual path did not iterate residual equations";
+  expect (int_field "linked_state_read_count" log > 0)
+    "linked residual path did not read solver state";
+  expect (int_field "linked_seed_input_read_count" log > 0)
+    "linked residual path did not report dynamic seed reads";
+  expect (bool_field "linked_equation_apply_reads_solver_state" log)
+    "linked residual path did not report state-reading equation applications";
+  expect (list_field "linked_exact_cell_dependencies" log <> [])
+    "linked residual path did not expose exact cell dependencies";
   require_source_absent (project_path "sparrow-modular-ocaml/src/abstract_speculate_residual_linker.ml");
   require_source_absent (project_path "sparrow-modular-ocaml/test/abstract_speculate_residual_linking_pe_dump.ml");
   let recomputed = recompute_evidence ~source_guard_passed:true ~manifest linked in
@@ -404,6 +448,7 @@ let () =
     "matched_obligation_count", `Int recomputed.matched_obligation_count;
     "unresolved_obligation_count", `Int recomputed.unresolved_obligation_count;
     "per_module_stage2_inputs_used", `Bool true;
+    "external_summary_v1_checked", `Bool true;
     "linked_residual_analyzer_ran", `Bool recomputed.linked_residual_analyzer_ran;
     "shortcut_guard", `String "pass";
     "false_case_checks", `List [

@@ -109,6 +109,29 @@ These gaps should shrink over time, not be canonized. Any specific claim of
 (a) state whether `≃` or `⊒` is being claimed, and (b) either name a runnable
 comparison or cite a specific implementation limit justifying `⊒`.
 
+### Current Option A residual-equation semantics
+
+The active Abstract Speculate implementation follows Option A for the supported
+Itv staged-cell slice: stage 1 emits module-local residual equations `E_m` whose
+transfer bodies are executable MetaOCaml `D code`; stage 2 validates dynamic
+extern/link input `d`, initializes residual state from static rows plus dynamic
+seeds, runs a deterministic bounded worklist solver, and materializes final
+input/output rows only after the worklist drains.
+
+Reports must distinguish this primary path from compatibility-only component
+overlay evidence.  Solver-backed evidence uses `residual_solver_run=true`,
+`solver_backed_residual_fixpoint=true`, `worklist_drained=true`, and
+`overlay_only=false`; overlay-only evidence cannot support the Option A claim.
+For the current fixtures the theorem-ready shape is:
+
+```text
+solve(E_m, d) ⊒ I(m⊕d)
+```
+
+The relation is intentionally scoped to the emitted equation language and
+witness universe.  It is not a full arbitrary-C or full product-domain Sparrow
+PE theorem, and cyclic linked residual solving remains future work.
+
 *Note on soundness decomposition.* The end-to-end claim decomposes into three
 independently verifiable layers:
 

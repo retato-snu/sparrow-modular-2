@@ -90,6 +90,26 @@ let require_online_residual module_id residual =
   end;
   expect (not (bool_field "stage2_sparse_recompute" execution_log))
     (module_id ^ ": residual analyzer recomputed the sparse pipeline at stage 2");
+  expect (bool_field "residual_solver_run" execution_log)
+    (module_id ^ ": stage2 did not run residual equation solver");
+  expect (bool_field "solver_backed_residual_fixpoint" execution_log)
+    (module_id ^ ": stage2 is not solver-backed");
+  expect (not (bool_field "overlay_only" execution_log))
+    (module_id ^ ": stage2 used overlay-only shortcut");
+  expect (bool_field "worklist_drained" execution_log)
+    (module_id ^ ": residual solver worklist did not drain");
+  expect (int_field "residual_equation_count" execution_log > 0)
+    (module_id ^ ": no residual equations were materialized");
+  expect (int_field "solver_iteration_count" execution_log > 1)
+    (module_id ^ ": residual equations were not iterated to a fixpoint");
+  expect (int_field "state_read_count" execution_log > 0)
+    (module_id ^ ": dependent residual equations did not read solver state");
+  expect (int_field "seed_input_read_count" execution_log > 0)
+    (module_id ^ ": residual equations did not report dynamic input seed reads");
+  expect (bool_field "equation_apply_reads_solver_state" execution_log)
+    (module_id ^ ": solver log did not record state-reading equation applications");
+  expect (list_field "exact_cell_dependencies" execution_log <> [])
+    (module_id ^ ": residual solver did not report exact cell dependencies");
   if extern_root_count > 0 then begin
     expect (int_field "residual_input_obligation_count" residual = 0)
       (module_id ^ ": extern-dependent PE must not be proved by residual input row obligations");

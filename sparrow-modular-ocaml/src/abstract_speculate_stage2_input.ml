@@ -3,6 +3,7 @@
 (***********************************************************************)
 
 module T = Abstract_speculate_stage_types
+module Residual_solver = Abstract_speculate_residual_solver
 
 let contains s sub =
   let len = String.length s and sub_len = String.length sub in
@@ -295,22 +296,33 @@ let run_summary
     ~extern_roots
     ~static_input_rows
     ~static_output_rows
-    ~residual_input_results
-    ~residual_output_results
-    ~control_results
+    ~residual_input_equations
+    ~residual_output_equations
+    ~control_equations
     ~shape_witnesses_json
     ~blind_equality_witness
     (input : T.stage2_input) =
   let extern_valid = validate_extern_effects ~source_hash ~extern_roots input in
   if not extern_valid then failwith "stage2 extern/link input does not match module residual obligation";
-  let residual_input_rows = rows_of_results residual_input_results in
-  let residual_output_rows = rows_of_results residual_output_results in
-  let final_input_table = overlay_rows static_input_rows residual_input_rows in
-  let final_output_table = overlay_rows static_output_rows residual_output_rows in
+  let residual_input_solution =
+    Residual_solver.solve ~input ~static_rows:static_input_rows ~equations:residual_input_equations
+  in
+  let residual_output_solution =
+    Residual_solver.solve ~input ~static_rows:static_output_rows ~equations:residual_output_equations
+  in
+  let control_solution =
+    Residual_solver.solve ~input ~static_rows:[] ~equations:control_equations
+  in
+  let residual_input_rows = residual_input_solution.Residual_solver.final_rows in
+  let residual_output_rows = residual_output_solution.Residual_solver.final_rows in
+  let final_input_table = residual_input_rows in
+  let final_output_table = residual_output_rows in
   if final_input_table = [] && final_output_table = [] then
     failwith "stage2 residual analyzer received no stage-1 sparse rows";
   let executed_residuals =
-    executions_of_results (residual_input_results @ residual_output_results @ control_results)
+    residual_input_solution.Residual_solver.executions @
+    residual_output_solution.Residual_solver.executions @
+    control_solution.Residual_solver.executions
   in
   let transfer_residuals = List.filter executed_transfer_component executed_residuals in
   let lattice_residuals = List.filter executed_lattice_component executed_residuals in
@@ -322,6 +334,46 @@ let run_summary
   in
   let loops, branches, exprs, typed = shape_counts_json shape_witnesses_json in
   let blind_ok = bool_member "static_projection_equal" blind_equality_witness in
+  let residual_equation_count =
+    List.length residual_input_equations + List.length residual_output_equations + List.length control_equations
+  in
+  let solver_iteration_count =
+    max
+      (Residual_solver.int_field "solver_iteration_count" residual_input_solution.Residual_solver.solver_log)
+      (max
+         (Residual_solver.int_field "solver_iteration_count" residual_output_solution.Residual_solver.solver_log)
+         (Residual_solver.int_field "solver_iteration_count" control_solution.Residual_solver.solver_log))
+  in
+  let changed_cell_count =
+    Residual_solver.int_field "changed_cell_count" residual_input_solution.Residual_solver.solver_log +
+    Residual_solver.int_field "changed_cell_count" residual_output_solution.Residual_solver.solver_log +
+    Residual_solver.int_field "changed_cell_count" control_solution.Residual_solver.solver_log
+  in
+  let enqueued_equation_count =
+    Residual_solver.int_field "enqueued_equation_count" residual_input_solution.Residual_solver.solver_log +
+    Residual_solver.int_field "enqueued_equation_count" residual_output_solution.Residual_solver.solver_log +
+    Residual_solver.int_field "enqueued_equation_count" control_solution.Residual_solver.solver_log
+  in
+  let state_read_count =
+    Residual_solver.int_field "state_read_count" residual_input_solution.Residual_solver.solver_log +
+    Residual_solver.int_field "state_read_count" residual_output_solution.Residual_solver.solver_log +
+    Residual_solver.int_field "state_read_count" control_solution.Residual_solver.solver_log
+  in
+  let seed_input_read_count =
+    Residual_solver.int_field "seed_input_read_count" residual_input_solution.Residual_solver.solver_log +
+    Residual_solver.int_field "seed_input_read_count" residual_output_solution.Residual_solver.solver_log +
+    Residual_solver.int_field "seed_input_read_count" control_solution.Residual_solver.solver_log
+  in
+  let exact_cell_dependencies =
+    let deps log =
+      match member "exact_cell_dependencies" log with
+      | `List xs -> xs
+      | _ -> []
+    in
+    deps residual_input_solution.Residual_solver.solver_log @
+    deps residual_output_solution.Residual_solver.solver_log @
+    deps control_solution.Residual_solver.solver_log
+  in
   let execution_log = `Assoc [
     "schema_version", `String schema_version;
     "module_id", `String module_id;
@@ -343,9 +395,27 @@ let run_summary
     "residual_input_row_count", int_json (List.length residual_input_rows);
     "static_output_row_count", int_json (List.length static_output_rows);
     "residual_output_row_count", int_json (List.length residual_output_rows);
-    "control_residual_count", int_json (List.length control_results);
+    "control_residual_count", int_json (List.length control_equations);
     "executed_residual_count", int_json (List.length executed_residuals);
     "executed_residuals", `List executed_residuals;
+    "residual_solver_run", `Bool true;
+    "solver_backed_residual_fixpoint", `Bool true;
+    "solver_iteration_count", `Int solver_iteration_count;
+    "changed_cell_count", `Int changed_cell_count;
+    "residual_equation_count", `Int residual_equation_count;
+    "enqueued_equation_count", `Int enqueued_equation_count;
+    "state_read_count", `Int state_read_count;
+    "seed_input_read_count", `Int seed_input_read_count;
+    "exact_cell_dependencies", `List exact_cell_dependencies;
+    "equation_apply_reads_solver_state", `Bool (state_read_count > 0);
+    "worklist_drained", `Bool true;
+    "overlay_only", `Bool false;
+    "residual_fixpoint_restart", `Bool (solver_iteration_count > 1);
+    "residual_solver_log", `Assoc [
+      "input", residual_input_solution.Residual_solver.solver_log;
+      "output", residual_output_solution.Residual_solver.solver_log;
+      "control", control_solution.Residual_solver.solver_log;
+    ];
     "blind_equality_static_projection", `Bool blind_ok;
     "convergence_ignores_residual_code_structure", blind_equality_witness |> member "ignores_residual_code_structure";
     "blind_equality_witness", blind_equality_witness;

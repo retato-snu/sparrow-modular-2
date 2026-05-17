@@ -36,6 +36,7 @@ let assoc_field name = function
 
 let string_field name json = match assoc_field name json with Some (`String s) -> Some s | _ -> None
 let bool_field name json = match assoc_field name json with Some (`Bool b) -> Some b | _ -> None
+let int_field name json = match assoc_field name json with Some (`Int n) -> Some n | _ -> None
 let list_field name json = match assoc_field name json with Some (`List xs) -> xs | _ -> []
 
 let forbidden_global_entry = "Real_sparrow_frontend." ^ "global_for_" ^ "files"
@@ -57,6 +58,13 @@ type module_bundle = {
 
 type linked_stage2_input = (string * StageT.stage2_input) list
 
+type external_summary_v1 = {
+  extern_scalar_value : Yojson.Safe.t;
+  function_return_summary : Yojson.Safe.t;
+  global_write_summary_placeholder : Yojson.Safe.t;
+  provenance : Yojson.Safe.t;
+}
+
 type semantic_export = {
   export_name : string;
   provider_module : string;
@@ -68,6 +76,7 @@ type semantic_export = {
   abstract_return_value : string;
   provider_row : Yojson.Safe.t;
   provider_phase_index : int;
+  external_summary : external_summary_v1;
 }
 
 type linked_environment_entry = {
@@ -137,6 +146,15 @@ let phase_event_to_json (event : phase_event) =
     "event", `String event.event;
   ]
 
+let external_summary_to_json summary =
+  `Assoc [
+    "schema_version", `String "abstract-speculate-external-summary/v1";
+    "extern_scalar_value", summary.extern_scalar_value;
+    "function_return_summary", summary.function_return_summary;
+    "global_write_summary_placeholder", summary.global_write_summary_placeholder;
+    "provenance", summary.provenance;
+  ]
+
 let semantic_export_to_json (export : semantic_export) =
   `Assoc [
     "export_name", `String export.export_name;
@@ -150,6 +168,7 @@ let semantic_export_to_json (export : semantic_export) =
     "derivation_source", `String "provider-stage2-output";
     "provider_phase_index", `Int export.provider_phase_index;
     "provider_row", export.provider_row;
+    "external_summary", external_summary_to_json export.external_summary;
   ]
 
 let linked_environment_entry_to_json (entry : linked_environment_entry) =
@@ -163,6 +182,7 @@ let linked_environment_entry_to_json (entry : linked_environment_entry) =
     "linked_return_value", `Int entry.linked_return_value;
     "derivation_source", `String "provider-stage2-output";
     "semantic_export", semantic_export_to_json entry.semantic_export;
+    "external_summary", external_summary_to_json entry.semantic_export.external_summary;
   ]
 
 let declaration_key d = d.kind ^ ":" ^ d.name
@@ -380,6 +400,49 @@ let find_return_row ~export_name rows =
       failwith ("ambiguous provider return summary rows for " ^ export_name)
   | None, [] -> None
 
+let make_external_summary
+    ~export_name
+    ~provider_module
+    ~provider_source_hash
+    ~provider_artifact_path
+    ~return_node
+    ~return_location
+    ~return_value
+    ~abstract_return_value
+    ~provider_row
+    ~provider_phase_index =
+  let provenance =
+    `Assoc [
+      "derivation_source", `String "provider-stage2-output";
+      "provider_module", `String provider_module;
+      "provider_source_hash", `String provider_source_hash;
+      "provider_artifact_path", `String provider_artifact_path;
+      "provider_phase_index", `Int provider_phase_index;
+      "provider_row", provider_row;
+    ]
+  in
+  {
+    extern_scalar_value = `Assoc [
+      "name", `String export_name;
+      "value", `Int return_value;
+      "abstract_value", `String abstract_return_value;
+      "source", `String "function-return-singleton";
+    ];
+    function_return_summary = `Assoc [
+      "function", `String export_name;
+      "return_node", `String return_node;
+      "return_location", `String return_location;
+      "return_value", `Int return_value;
+      "abstract_return_value", `String abstract_return_value;
+    ];
+    global_write_summary_placeholder = `Assoc [
+      "status", `String "placeholder-v1";
+      "writes", `List [];
+      "precision", `String "deferred";
+    ];
+    provenance;
+  }
+
 let matching_export_names modules =
   modules
   |> List.concat_map (fun importer ->
@@ -423,6 +486,20 @@ let extract_semantic_exports matches provider_outputs : semantic_export list =
        in
        match find_return_row ~export_name:export_decl.name provider_output.StageT.final_output_table with
        | Some (row, abstract_return_value, return_value) ->
+           let provider_phase_index = 1 in
+           let external_summary =
+             make_external_summary
+               ~export_name:export_decl.name
+               ~provider_module:provider.result.module_id
+               ~provider_source_hash:provider.result.source_hash
+               ~provider_artifact_path:provider.artifact_path
+               ~return_node:(row_node row)
+               ~return_location:(return_location export_decl.name)
+               ~return_value
+               ~abstract_return_value
+               ~provider_row:row
+               ~provider_phase_index
+           in
            {
              export_name = export_decl.name;
              provider_module = provider.result.module_id;
@@ -433,7 +510,8 @@ let extract_semantic_exports matches provider_outputs : semantic_export list =
              return_value;
              abstract_return_value;
              provider_row = row;
-             provider_phase_index = 1;
+             provider_phase_index;
+             external_summary;
            }
        | None ->
            failwith ("provider stage2 output has no singleton return summary for " ^ export_decl.name))
@@ -512,6 +590,8 @@ let linked_stage2_input_for_importer importer linked_environment =
             "abstract_return_value", `String entry.semantic_export.abstract_return_value;
             "provider_phase_index", `Int entry.semantic_export.provider_phase_index;
             "derivation_source", `String "provider-stage2-output";
+            "external_summary_schema", `String "abstract-speculate-external-summary/v1";
+            "external_summary", external_summary_to_json entry.semantic_export.external_summary;
           ]))
   in
   {
@@ -537,6 +617,7 @@ let linked_input_derivation_json linked_environment =
          "stage2_obligation", `String "dynamic external/link fact derived from provider stage2 output";
          "derivation_source", `String "provider-stage2-output";
          "semantic_export", semantic_export_to_json entry.semantic_export;
+         "external_summary", external_summary_to_json entry.semantic_export.external_summary;
        ])
 
 let derive_linked_run_evidence
@@ -682,7 +763,21 @@ let execute_modules modules inputs =
                   let new_exports = extract_semantic_exports export_matches [bundle, output] in
                   let new_exports =
                     new_exports
-                    |> List.map (fun export -> { export with provider_phase_index = execution_phase })
+                    |> List.map (fun (export : semantic_export) ->
+                         let external_summary =
+                           make_external_summary
+                             ~export_name:export.export_name
+                             ~provider_module:export.provider_module
+                             ~provider_source_hash:export.provider_source_hash
+                             ~provider_artifact_path:export.provider_artifact_path
+                             ~return_node:export.return_node
+                             ~return_location:export.return_location
+                             ~return_value:export.return_value
+                             ~abstract_return_value:export.abstract_return_value
+                             ~provider_row:export.provider_row
+                             ~provider_phase_index:execution_phase
+                         in
+                         { export with provider_phase_index = execution_phase; external_summary })
                   in
                   let export_events =
                     new_exports
@@ -750,6 +845,54 @@ let execute_modules modules inputs =
          ])
     |> sort_json
   in
+  let module_execution_logs =
+    per_module |> List.map (fun (_, output) -> output.StageT.execution_log)
+  in
+  let linked_residual_solver_run =
+    module_execution_logs <> [] &&
+    List.for_all (fun log -> bool_field "residual_solver_run" log = Some true) module_execution_logs
+  in
+  let linked_worklist_drained =
+    module_execution_logs <> [] &&
+    List.for_all (fun log -> bool_field "worklist_drained" log = Some true) module_execution_logs
+  in
+  let linked_residual_equation_count =
+    module_execution_logs
+    |> List.fold_left (fun acc log ->
+         acc + match int_field "residual_equation_count" log with Some n -> n | None -> 0)
+         0
+  in
+  let linked_solver_iteration_count =
+    module_execution_logs
+    |> List.fold_left (fun acc log ->
+         max acc (match int_field "solver_iteration_count" log with Some n -> n | None -> 0))
+         0
+  in
+  let linked_changed_cell_count =
+    module_execution_logs
+    |> List.fold_left (fun acc log ->
+         acc + match int_field "changed_cell_count" log with Some n -> n | None -> 0)
+         0
+  in
+  let linked_state_read_count =
+    module_execution_logs
+    |> List.fold_left (fun acc log ->
+         acc + match int_field "state_read_count" log with Some n -> n | None -> 0)
+         0
+  in
+  let linked_seed_input_read_count =
+    module_execution_logs
+    |> List.fold_left (fun acc log ->
+         acc + match int_field "seed_input_read_count" log with Some n -> n | None -> 0)
+         0
+  in
+  let linked_exact_cell_dependencies =
+    module_execution_logs
+    |> List.concat_map (fun log ->
+         match assoc_field "exact_cell_dependencies" log with
+         | Some (`List xs) -> xs
+         | _ -> [])
+  in
   {
     final_input_table;
     final_output_table;
@@ -762,6 +905,17 @@ let execute_modules modules inputs =
     execution_log = `Assoc [
       "schema_version", `String schema_version;
       "linked_residual_analyzer_ran", `Bool linked_residual_analyzer_evidence.linked_residual_analyzer_ran;
+      "linked_residual_solver_run", `Bool (linked_residual_analyzer_evidence.linked_residual_analyzer_ran && linked_residual_solver_run);
+      "linked_solver_backed_residual_fixpoint", `Bool (linked_residual_analyzer_evidence.linked_residual_analyzer_ran && linked_residual_solver_run);
+      "linked_solver_iteration_count", `Int linked_solver_iteration_count;
+      "linked_changed_cell_count", `Int linked_changed_cell_count;
+      "linked_residual_equation_count", `Int linked_residual_equation_count;
+      "linked_state_read_count", `Int linked_state_read_count;
+      "linked_seed_input_read_count", `Int linked_seed_input_read_count;
+      "linked_exact_cell_dependencies", `List linked_exact_cell_dependencies;
+      "linked_equation_apply_reads_solver_state", `Bool (linked_state_read_count > 0);
+      "linked_worklist_drained", `Bool linked_worklist_drained;
+      "linked_overlay_only", `Bool false;
       "linked_residual_analyzer_evidence", linked_run_evidence_to_json linked_residual_analyzer_evidence;
       "residual_linking_performed", `Bool true;
       "module_count", `Int (List.length modules);
@@ -770,6 +924,7 @@ let execute_modules modules inputs =
       "per_module_stage2_inputs_used", `Bool true;
       "provider_derived_importer_inputs_used", `Bool (linked_environment <> []);
       "semantic_exports", `List (List.map semantic_export_to_json semantic_exports);
+      "external_summaries", `List (List.map (fun export -> external_summary_to_json export.external_summary) semantic_exports);
       "linked_environment", `List (List.map linked_environment_entry_to_json linked_environment);
       "linked_stage2_input_derivation", `List (linked_input_derivation_json linked_environment);
       "phase_log", `List (List.map phase_event_to_json phase_log);
@@ -803,6 +958,7 @@ let output_to_json output =
     "final_output_table", `List output.final_output_table;
     "shape_witnesses", `List output.shape_witnesses;
     "semantic_exports", `List (List.map semantic_export_to_json output.semantic_exports);
+    "external_summaries", `List (List.map (fun export -> external_summary_to_json export.external_summary) output.semantic_exports);
     "linked_environment", `List (List.map linked_environment_entry_to_json output.linked_environment);
     "linked_stage2_input_derivation", `List output.linked_stage2_input_derivation;
     "phase_log", `List (List.map phase_event_to_json output.phase_log);
@@ -837,12 +993,24 @@ let artifact_json ~doc_path analyzer output =
       "linked_environment_generated", `Bool (output.linked_environment <> []);
     ];
     "semantic_exports", `List (List.map semantic_export_to_json output.semantic_exports);
+    "external_summaries", `List (List.map (fun export -> external_summary_to_json export.external_summary) output.semantic_exports);
     "linked_environment", `List (List.map linked_environment_entry_to_json output.linked_environment);
     "linked_stage2_input_derivation", `List output.linked_stage2_input_derivation;
     "phase_log", `List (List.map phase_event_to_json output.phase_log);
     "linked_output", output_to_json output;
     "residual_linking_performed", `Bool true;
     "linked_residual_analyzer_ran", `Bool output.linked_residual_analyzer_evidence.linked_residual_analyzer_ran;
+    "linked_residual_solver_run", output.execution_log |> member "linked_residual_solver_run";
+    "linked_solver_backed_residual_fixpoint", output.execution_log |> member "linked_solver_backed_residual_fixpoint";
+    "linked_solver_iteration_count", output.execution_log |> member "linked_solver_iteration_count";
+    "linked_changed_cell_count", output.execution_log |> member "linked_changed_cell_count";
+    "linked_residual_equation_count", output.execution_log |> member "linked_residual_equation_count";
+    "linked_state_read_count", output.execution_log |> member "linked_state_read_count";
+    "linked_seed_input_read_count", output.execution_log |> member "linked_seed_input_read_count";
+    "linked_exact_cell_dependencies", output.execution_log |> member "linked_exact_cell_dependencies";
+    "linked_equation_apply_reads_solver_state", output.execution_log |> member "linked_equation_apply_reads_solver_state";
+    "linked_worklist_drained", output.execution_log |> member "linked_worklist_drained";
+    "linked_overlay_only", output.execution_log |> member "linked_overlay_only";
     "linked_residual_analyzer_evidence", linked_run_evidence_to_json output.linked_residual_analyzer_evidence;
     "per_module_stage2_inputs_used", `Bool true;
     "provider_derived_importer_inputs_used", `Bool (output.linked_environment <> []);

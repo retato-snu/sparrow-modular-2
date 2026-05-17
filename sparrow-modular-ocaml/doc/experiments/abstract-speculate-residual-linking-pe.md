@@ -15,8 +15,10 @@ The linked analyzer is produced after each module has already passed through the
 - Stage 1 remains module-local: `Real_sparrow_frontend.global_for_module` and `MetaSparse.run_stage1` produce each module's typed residual analyzer.
 - Residual linking consumes typed stage-1 results, not only dumped JSON summaries.
 - The linked bundle executor keeps source-hash/extern-root validation per module. Provider modules run with their validated module-local stage-2 input; importer modules that have matched residual-link obligations receive a linked stage-2 input derived from the provider semantic export environment.
+- Stage 2 is solver-backed for the supported slice: staged residual cells are emitted as residual equations, the deterministic worklist solver propagates dynamic extern/link seeds, and reports distinguish `solver-backed-residual-fixpoint` from `component-overlay-legacy` evidence.
+- The solver-backed claim requires actual solver-state reads: a residual equation receives `residual_state_view -> stage2_input`, dependent equations read prior cells through the state view, and review/audit gates reject zero state reads, zero seed reads, missing exact cell dependencies, or overlay-only evidence.
 - Structural import/export obligations are derived from parsed CIL/global data retained in each stage-1 result. The linker does not accept manual import/export lists as the source of truth.
-- The first semantic milestone is return-only: the provider's stage-2 output row for `(linked_provider,__return__)` is summarized into `semantic_exports`, then consumed through `linked_environment` to build the importer's dynamic extern-call input.
+- The first semantic milestone is return-focused: the provider's stage-2 output row for `(linked_provider,__return__)` is summarized into `semantic_exports` and `ExternalSummary v1`, then consumed through `linked_environment` to build the importer's dynamic extern-call input. ExternalSummary v1 currently carries extern scalar value, function return summary, global-write placeholder, and provenance.
 
 ## Full Sparrow-Itv semantic relation contract
 
@@ -32,7 +34,32 @@ The left side is the linked residual analyzer produced after each module has alr
 The relation is still witness-bounded and prototype/non-public.  "Full
 Sparrow-Itv" means the complete Itv evidence emitted by the accepted
 residual-linking slice, not Oct, Taint, arbitrary-C semantic equivalence, or a
-whole-program C theorem.
+whole-program C theorem.  The theorem-ready implementation statement for the
+supported fixtures is `solve(E_m, d) ⊒ I(m⊕d)`, where `E_m` is the emitted
+module-local residual equation set and `d` is validated dynamic extern/link
+input; equality is not claimed outside the checked witness relation.
+
+### Review lock: residual equations over solver state
+
+The accepted Option A review criterion is stronger than "stage-2 closures ran".
+For this experiment, the following are mandatory claim gates:
+
+- `residual_equation.apply` has the shape
+  `residual_state_view -> stage2_input -> residual_component_result`;
+- the residual solver invokes equations with its current state view, not only a
+  dynamic input record;
+- dependency propagation is evidenced by non-empty `exact_cell_dependencies`,
+  positive `state_read_count`, positive `seed_input_read_count`, and
+  `equation_apply_reads_solver_state=true`;
+- the solver unit fixture represents the semantic chain `n -> x -> y -> ret`:
+  only `x` reads the dynamic seed, while `y` and `ret` must read `x`/`y`
+  through solver state; and
+- the compatibility bridge that invokes existing component code inside an
+  equation body remains implementation scaffolding, not a standalone PE proof.
+
+Any future change that weakens one of these gates must downgrade the claim back
+to instrumentation/prototype evidence until an equivalent state-reading
+residual-equation contract is restored.
 
 ### Domains
 
