@@ -58,11 +58,19 @@ type module_bundle = {
 
 type linked_stage2_input = (string * StageT.stage2_input) list
 
-type external_summary_v1 = {
+type external_summary_v1_compat = {
   extern_scalar_value : Yojson.Safe.t;
   function_return_summary : Yojson.Safe.t;
   global_write_summary_placeholder : Yojson.Safe.t;
   provenance : Yojson.Safe.t;
+}
+
+type external_summary_v2 = {
+  return_effects : Yojson.Safe.t list;
+  global_effects : Yojson.Safe.t list;
+  pointer_effects : Yojson.Safe.t list;
+  provenance : Yojson.Safe.t;
+  v1_compat : external_summary_v1_compat;
 }
 
 type semantic_export = {
@@ -76,7 +84,7 @@ type semantic_export = {
   abstract_return_value : string;
   provider_row : Yojson.Safe.t;
   provider_phase_index : int;
-  external_summary : external_summary_v1;
+  external_summary : external_summary_v2;
 }
 
 type linked_environment_entry = {
@@ -146,13 +154,30 @@ let phase_event_to_json (event : phase_event) =
     "event", `String event.event;
   ]
 
-let external_summary_to_json summary =
+let external_summary_v1_compat_to_json summary =
   `Assoc [
     "schema_version", `String "abstract-speculate-external-summary/v1";
     "extern_scalar_value", summary.extern_scalar_value;
     "function_return_summary", summary.function_return_summary;
     "global_write_summary_placeholder", summary.global_write_summary_placeholder;
     "provenance", summary.provenance;
+  ]
+
+let external_summary_to_json summary =
+  `Assoc [
+    "schema_version", `String "abstract-speculate-external-summary/v2";
+    "summary_api_status", `String "prototype-internal";
+    "summary_scope", `String "sparrow-itv-selected-witness";
+    "effect_domains", `List [
+      `String "return";
+      `String "global-write-read";
+      `String "pointer-memory-effect";
+    ];
+    "return_effects", `List summary.return_effects;
+    "global_effects", `List summary.global_effects;
+    "pointer_effects", `List summary.pointer_effects;
+    "provenance", summary.provenance;
+    "external_summary_v1_compat", external_summary_v1_compat_to_json summary.v1_compat;
   ]
 
 let semantic_export_to_json (export : semantic_export) =
@@ -376,6 +401,58 @@ let cell_value cell = match string_field "value" cell with Some s -> s | None ->
 
 let return_location name = "(" ^ name ^ ",__return__)"
 
+let is_parenthesized_location location =
+  String.length location >= 2 &&
+  location.[0] = '(' &&
+  location.[String.length location - 1] = ')'
+
+let effect_location_kind location =
+  if is_parenthesized_location location && contains location "," then "pointer-memory-effect"
+  else "global-write-read"
+
+let effect_id ~provider_module ~export_name ~domain ~location =
+  provider_module ^ ":" ^ export_name ^ ":" ^ domain ^ ":" ^ location
+
+let typed_effect
+    ~domain
+    ~effect_id
+    ~symbol
+    ~location
+    ~value_json
+    ~provider_module
+    ~provider_source_hash
+    ~provider_artifact_path
+    ~provider_phase_index
+    ~derivation_source
+    ~source_evidence_path =
+  let singleton_int =
+    match value_json with
+    | `Int n -> `Int n
+    | `String value ->
+        begin match parse_singleton_interval_value value with
+        | Some n -> `Int n
+        | None -> `Null
+        end
+    | _ -> `Null
+  in
+  `Assoc [
+    "effect_id", `String effect_id;
+    "domain", `String domain;
+    "symbol", `String symbol;
+    "location", `String location;
+    "normalized_location", `String location;
+    "value", value_json;
+    "abstract_value", value_json;
+    "singleton_int", singleton_int;
+    "provider_module", `String provider_module;
+    "provider_source_hash", `String provider_source_hash;
+    "provider_artifact_path", `String provider_artifact_path;
+    "provider_phase_index", `Int provider_phase_index;
+    "derivation_source", `String derivation_source;
+    "source_evidence_path", `String source_evidence_path;
+    "witness_scope", `String "selected-sparrow-itv";
+  ]
+
 let find_return_row ~export_name rows =
   let location = return_location export_name in
   let candidates =
@@ -421,26 +498,86 @@ let make_external_summary
       "provider_row", provider_row;
     ]
   in
+  let return_effect =
+    typed_effect
+      ~domain:"return"
+      ~effect_id:(effect_id
+        ~provider_module
+        ~export_name
+        ~domain:"return"
+        ~location:return_location)
+      ~symbol:export_name
+      ~location:return_location
+      ~value_json:(`Int return_value)
+      ~provider_module
+      ~provider_source_hash
+      ~provider_artifact_path
+      ~provider_phase_index
+      ~derivation_source:"provider-stage2-output"
+      ~source_evidence_path:"provider_row.return"
+  in
+  let memory_effects =
+    provider_row
+    |> row_memory
+    |> List.filter_map (fun cell ->
+         let location = cell_location cell in
+         if location = "" || location = return_location then None
+         else
+           let domain = effect_location_kind location in
+           let summary_location =
+             if domain = "pointer-memory-effect" then "(" ^ export_name ^ ",p)"
+             else location
+           in
+           Some (typed_effect
+             ~domain
+             ~effect_id:(effect_id ~provider_module ~export_name ~domain ~location:summary_location)
+             ~symbol:(if domain = "pointer-memory-effect" then export_name else location)
+             ~location:summary_location
+             ~value_json:(`String (cell_value cell))
+             ~provider_module
+             ~provider_source_hash
+             ~provider_artifact_path
+             ~provider_phase_index
+             ~derivation_source:"provider-stage2-output"
+             ~source_evidence_path:("provider_row.memory:" ^ location)))
+  in
+  let global_effects =
+    memory_effects
+    |> List.filter (fun eff -> string_field "domain" eff = Some "global-write-read")
+  in
+  let pointer_effects =
+    memory_effects
+    |> List.filter (fun eff -> string_field "domain" eff = Some "pointer-memory-effect")
+  in
+  let v1_compat =
+    {
+      extern_scalar_value = `Assoc [
+        "name", `String export_name;
+        "value", `Int return_value;
+        "abstract_value", `String abstract_return_value;
+        "source", `String "function-return-singleton";
+      ];
+      function_return_summary = `Assoc [
+        "function", `String export_name;
+        "return_node", `String return_node;
+        "return_location", `String return_location;
+        "return_value", `Int return_value;
+        "abstract_return_value", `String abstract_return_value;
+      ];
+      global_write_summary_placeholder = `Assoc [
+        "status", `String "compat-v1-non-authoritative";
+        "writes", `List [];
+        "precision", `String "superseded-by-external-summary-v2";
+      ];
+      provenance;
+    }
+  in
   {
-    extern_scalar_value = `Assoc [
-      "name", `String export_name;
-      "value", `Int return_value;
-      "abstract_value", `String abstract_return_value;
-      "source", `String "function-return-singleton";
-    ];
-    function_return_summary = `Assoc [
-      "function", `String export_name;
-      "return_node", `String return_node;
-      "return_location", `String return_location;
-      "return_value", `Int return_value;
-      "abstract_return_value", `String abstract_return_value;
-    ];
-    global_write_summary_placeholder = `Assoc [
-      "status", `String "placeholder-v1";
-      "writes", `List [];
-      "precision", `String "deferred";
-    ];
+    return_effects = [return_effect];
+    global_effects;
+    pointer_effects;
     provenance;
+    v1_compat;
   }
 
 let matching_export_names modules =
@@ -570,6 +707,16 @@ let linked_environment_for_matches matches (semantic_exports : semantic_export l
          semantic_export;
        })
 
+let primary_return_effect (summary : external_summary_v2) =
+  match summary.return_effects with
+  | eff :: _ -> eff
+  | [] -> failwith "ExternalSummary v2 has no return effect for linked import"
+
+let return_effect_id summary =
+  match string_field "effect_id" (primary_return_effect summary) with
+  | Some id -> id
+  | None -> failwith "ExternalSummary v2 return effect missing effect_id"
+
 let linked_stage2_input_for_importer importer linked_environment =
   let entries =
     linked_environment
@@ -590,7 +737,10 @@ let linked_stage2_input_for_importer importer linked_environment =
             "abstract_return_value", `String entry.semantic_export.abstract_return_value;
             "provider_phase_index", `Int entry.semantic_export.provider_phase_index;
             "derivation_source", `String "provider-stage2-output";
-            "external_summary_schema", `String "abstract-speculate-external-summary/v1";
+            "external_summary_schema", `String "abstract-speculate-external-summary/v2";
+            "summary_api_status", `String "prototype-internal";
+            "external_summary_effect_id", `String (return_effect_id entry.semantic_export.external_summary);
+            "return_effect", primary_return_effect entry.semantic_export.external_summary;
             "external_summary", external_summary_to_json entry.semantic_export.external_summary;
           ]))
   in
@@ -616,6 +766,10 @@ let linked_input_derivation_json linked_environment =
          "effect_reason", `String "linked-provider-return";
          "stage2_obligation", `String "dynamic external/link fact derived from provider stage2 output";
          "derivation_source", `String "provider-stage2-output";
+         "external_summary_schema", `String "abstract-speculate-external-summary/v2";
+         "summary_api_status", `String "prototype-internal";
+         "external_summary_effect_id", `String (return_effect_id entry.semantic_export.external_summary);
+         "return_effect", primary_return_effect entry.semantic_export.external_summary;
          "semantic_export", semantic_export_to_json entry.semantic_export;
          "external_summary", external_summary_to_json entry.semantic_export.external_summary;
        ])

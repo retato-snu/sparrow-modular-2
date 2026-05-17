@@ -18,7 +18,13 @@ The linked analyzer is produced after each module has already passed through the
 - Stage 2 is solver-backed for the supported slice: staged residual cells are emitted as residual equations, the deterministic worklist solver propagates dynamic extern/link seeds, and reports distinguish `solver-backed-residual-fixpoint` from `component-overlay-legacy` evidence.
 - The solver-backed claim requires actual solver-state reads: a residual equation receives `residual_state_view -> stage2_input`, dependent equations read prior cells through the state view, and review/audit gates reject zero state reads, zero seed reads, missing exact cell dependencies, or overlay-only evidence.
 - Structural import/export obligations are derived from parsed CIL/global data retained in each stage-1 result. The linker does not accept manual import/export lists as the source of truth.
-- The first semantic milestone is return-focused: the provider's stage-2 output row for `(linked_provider,__return__)` is summarized into `semantic_exports` and `ExternalSummary v1`, then consumed through `linked_environment` to build the importer's dynamic extern-call input. ExternalSummary v1 currently carries extern scalar value, function return summary, global-write placeholder, and provenance.
+- The first semantic milestone was return-focused; the current handoff uses
+  `ExternalSummary v2`, a prototype/internal typed effect summary over selected
+  Sparrow-Itv witnesses.  Provider stage-2 rows are summarized into typed
+  `return_effects`, `global_effects`, and `pointer_effects`, then consumed
+  through `semantic_exports`, `linked_environment`, and linked stage-2 input
+  derivations.  The embedded v1 projection is compatibility evidence only and
+  is not authoritative.
 
 ## Full Sparrow-Itv semantic relation contract
 
@@ -56,10 +62,32 @@ For this experiment, the following are mandatory claim gates:
   through solver state; and
 - the compatibility bridge that invokes existing component code inside an
   equation body remains implementation scaffolding, not a standalone PE proof.
+- linked handoff evidence must prefer ExternalSummary v2 typed effects; v1
+  compatibility projections cannot satisfy return/global/pointer summary gates.
 
 Any future change that weakens one of these gates must downgrade the claim back
 to instrumentation/prototype evidence until an equivalent state-reading
 residual-equation contract is restored.
+
+### ExternalSummary v2 typed-effect boundary
+
+`ExternalSummary v2` is an internal prototype schema, not a public API.  Its
+scope is `sparrow-itv-selected-witness` and its summary status is
+`prototype-internal`.  Each summary records:
+
+- `return_effects` for provider return cells used by linked importer extern
+  calls;
+- `global_effects` for selected global write/read evidence such as `shared_g`;
+- `pointer_effects` for selected pointer/shared-memory evidence such as
+  `(write_ptr,p)`;
+- provider/source/phase/evidence-path provenance; and
+- `external_summary_v1_compat` as a non-authoritative migration projection.
+
+The checker rejects missing v2 summaries, v1-only summaries, schema/status
+downgrades, missing or corrupted return effects, missing selected
+global/pointer effects, corrupted selected global/pointer location, value, or
+provenance, and linked stage-2 derivations that do not name the v2 return
+`effect_id`.
 
 ### Domains
 
@@ -68,7 +96,9 @@ The relation ranges over prototype witness artifacts, not arbitrary C programs. 
 - residual artifacts emitted by module-local `PE(I, mi)` followed by residual linking;
 - oracle/reference artifacts emitted by the premerge linked observer for the same witness group;
 - full final input/output Itv table cells exposed by those artifacts;
-- semantic exports, linked environments, phase logs, linked stage-2 derivations, completion evidence, and provenance required to interpret those cells.
+- semantic exports, linked environments, typed ExternalSummary v2 effects,
+  phase logs, linked stage-2 derivations, completion evidence, and provenance
+  required to interpret those cells.
 
 ### Semantic universe manifest
 
@@ -79,6 +109,8 @@ Each witness report emits `full_itv_semantic_relation` with:
 - `semantic_universe` listing final tables, semantic exports, linked
   environment/call-effect evidence, completion/status evidence, provenance, and
   oracle identity;
+- ExternalSummary v2 return/global/pointer effect evidence, with v1
+  compatibility treated as non-authoritative;
 - `semantic_universe_manifest` classifying facts as compared, missing,
   intentionally excluded, or expected-but-not-emitted;
 - `failure_taxonomy` with bounded reasons:
@@ -195,13 +227,19 @@ provider stage2 output row
   -> importer dynamic call result
 ```
 
-For the current witness, `semantic_exports` contains the provider-derived summary for `linked_provider`:
+For the current return witness, `semantic_exports` contains the provider-derived summary for `linked_provider`:
 
 - provider module and source hash;
 - return location `(linked_provider,__return__)`;
 - abstract return value, currently the singleton interval row `([41, 41], bot, bot, bot, bot)`;
 - concrete return value parsed from that provider stage-2 row;
 - row/provenance evidence marked `provider-stage2-output`.
+
+For global and pointer witnesses, the same ExternalSummary v2 object additionally
+contains selected typed global or pointer effects.  These effects are checked
+against the oracle-suite relation observations, but they remain bounded to the
+selected Sparrow-Itv witness universe rather than a general C memory/effect
+calculus.
 
 `linked_environment` maps the importer's matched `linked_provider` obligation and extern root (currently `main-4`) to that provider summary. The importer's linked stage-2 extern effect uses reason `linked-provider-return`; the old module-local `unknown-extern-call` value is no longer accepted as linkage evidence, even when the numeric value happens to be `41`.
 

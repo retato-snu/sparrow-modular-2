@@ -61,7 +61,7 @@ Oct/Taint semantics, or the full Sparrow product analyzer.
 | Full product-domain staging | The accepted staged semantics are still Itv-focused; other product components are not generally residualized. | Product-domain fidelity is required before broad Sparrow claims. |
 | Oct/Taint semantic preservation | The full relation is Itv-scoped only. | Product-domain claims require separate evidence and tests. |
 | Arbitrary-C semantic preservation | Fixtures and oracle-suite witnesses bound the evidence. | Current results are not a theorem for all C modules. |
-| General residual summary language | ExternalSummary v1 exists for scalar/function-return handoff with a global-write placeholder, but return/global/pointer observations remain witness-bounded. | Broader linking still needs a richer typed effect/summary algebra. |
+| General residual summary language | ExternalSummary v2 is prototype/internal and typed for selected return, global-write/read, and pointer-memory effects, but remains witness-bounded. | Broader linking still needs a general effect algebra beyond selected Sparrow-Itv witnesses. |
 | Cyclic residual linking | Mixed-role cycles are rejected. | Cycles require an explicit linked residual fixpoint semantics. |
 | Whole-program residual global fixpoint | The residual linker does not rerun a global sparse fixpoint. | Needed for a stronger `link(PE(I,m),d)` equivalence claim. |
 | Full dynamic control residualization | Loop/branch shape witnesses exist, but statement-level dynamic control coverage is limited. | Needed for larger program classes. |
@@ -135,7 +135,10 @@ pointer observations, non-selected Itv cell removal that fails the full relation
 while selected diagnostics still pass, ambiguous provider acceptance, invalid
 mixed-role phase ordering, forbidden premerge shortcut leakage, missing oracle
 artifacts, witness identity mismatch, missing provenance, and mixed-role
-dependency cycles.
+dependency cycles.  The suite also rejects ExternalSummary v1-only/compat-only
+artifacts, missing v2 summaries, schema/status downgrades, missing typed
+global/pointer effects, and corrupted selected return/global/pointer effect
+value, location, or provenance.
 
 ## Verification commands
 
@@ -162,8 +165,8 @@ make the current prototype easier to evaluate:
 
 1. stabilize and commit the residual-linking oracle-suite artifacts;
 2. keep the full Sparrow-Itv relation schema documented and prototype/non-public;
-3. extend `ExternalSummary v1` beyond scalar/function-return handoff into richer
-   globals, pointer writes, and provenance;
+3. replace the prototype selected-witness ExternalSummary v2 rules with a
+   general typed effect algebra only after the witness-bounded contract is stable;
 4. continue factoring residual-linking scheduling into explicit acyclic dependency
    graph evidence and keep the stage-2 residual solver as the primary runtime;
 5. keep cycles rejected until a linked residual fixpoint semantics is designed.

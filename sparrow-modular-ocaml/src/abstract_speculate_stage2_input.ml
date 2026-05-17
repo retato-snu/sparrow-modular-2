@@ -32,6 +32,11 @@ let make_extern_effects ~source ~hash ~extern_roots =
   ]
 
 let make_linked_extern_effects ~source ~hash ~extern_roots ~linked_effects =
+  let provenance_string name provenance =
+    match provenance with
+    | `Assoc fields -> (match List.assoc_opt name fields with Some (`String s) -> s | _ -> "")
+    | _ -> ""
+  in
   let effect_for root =
     match List.assoc_opt root linked_effects with
     | Some (value, provenance) ->
@@ -41,6 +46,9 @@ let make_linked_extern_effects ~source ~hash ~extern_roots ~linked_effects =
           "value", `Int value;
           "stage2_obligation", `String "dynamic external/link fact derived from provider stage2 output";
           "linked_derivation_source", `String "provider-stage2-output";
+          "external_summary_schema", `String (provenance_string "external_summary_schema" provenance);
+          "external_summary_effect_id", `String (provenance_string "external_summary_effect_id" provenance);
+          "summary_api_status", `String (provenance_string "summary_api_status" provenance);
           "linked_provenance", provenance;
         ]
     | None ->
