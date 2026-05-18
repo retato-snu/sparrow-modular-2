@@ -565,6 +565,13 @@ let command_transfer_updates ~module_id ~source_file ~source_hash spec global ta
         List.fold_left (fun acc exp -> PowLoc.union acc (powlocs_of_exp spec node exp)) PowLoc.empty args
       in
       let dynamic_args = any_dynamic_locs arg_reads input_memory in
+      let dynamic_arg_code () =
+        args
+        |> List.find_opt (fun exp -> any_dynamic_locs (powlocs_of_exp spec node exp) input_memory)
+        |> function
+           | Some exp -> residual_expression_code spec node input_memory exp
+           | None -> static_expression_code 0
+      in
       begin match lvo with
       | Some lv when unknown || dynamic_args ->
           let transfer_event =
@@ -578,7 +585,7 @@ let command_transfer_updates ~module_id ~source_file ~source_hash spec global ta
             "call-result-extern-or-dynamic"
             (fun loc ->
               if unknown then extern_expression_code node loc
-              else residual_expression_code spec node input_memory callee)
+              else dynamic_arg_code ())
             .<fun _ -> true>.
       | _ -> []
       end

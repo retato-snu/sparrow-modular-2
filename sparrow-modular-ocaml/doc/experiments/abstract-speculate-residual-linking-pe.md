@@ -348,6 +348,21 @@ the subset needed by the witness path:
 - `Cset` when the right-hand side reads a dynamic cell; and
 - `Cif` / `Cassume` when the guard reads a dynamic cell.
 
+`test/abstract_speculate_staged_transfer.ml` is the executable command-transfer
+coverage gate for this subset.  It records command-form provenance by joining
+each executed residual entry's node back to `bta_node_facts.command_kind`, and
+it rejects metadata-only, ordinal-only, wrapper-only, and counter-only evidence.
+The current executable matrix is:
+
+| Command form | Fixture | Transfer evidence | Executed evidence | Mutation / negative gate |
+| --- | --- | --- | --- | --- |
+| `Ccall` unknown/imported | `test/fixtures/abstract_speculate_pe/extern_dependent_call.c` | `extern-call-result-created-D-during-transfer` | Executed typed residual for `call result`, value `41`, with `Ccall` node provenance | Malformed extern source hash/effects fail closed; changed extern value recomputes call result and dependent assignments |
+| `Ccall` known dynamic | `test/fixtures/abstract_speculate_pe/known_dynamic_call.c` | `dynamic-call-result-created-D-during-transfer` | Executed typed residual for an identity helper call whose argument is dynamic, with `Ccall` node provenance | Changed extern value recomputes the dynamic call-result residual |
+| `Cset` dynamic chain | `test/fixtures/abstract_speculate_pe/extern_dependent_call.c` | `dynamic-arithmetic-created-D-during-transfer` | Executed typed residuals for `x := tmp` and dependent `y := x+1`, with `Cset` node provenance | Changed extern value propagates through the chain (`7`, then `8`) |
+| `Cassume` dynamic guard | `test/fixtures/abstract_speculate_metaocaml_sparse/dynamic_branch.c` | `dynamic-guard-created-D-during-transfer` | Executed typed guard residuals for both `guard x>0` and `guard !(x>0)`, with `Cassume` node provenance | Changed extern value flips both observed guard polarities |
+| `Cif` dynamic guard | `test/fixtures/abstract_speculate_metaocaml_sparse/dynamic_branch.c` feasibility checkpoint | Frontend lowering inserts `Cassume` nodes and `remove_if_loop` removes executable `Cif` transfer nodes before staged sparse transfer | Nearest executable evidence is the paired `Cassume` guard matrix rows plus branch-shape control residuals | The test asserts the current frontend-lowered boundary so any future reachable `Cif` residual must be covered explicitly |
+| `Cexternal` direct external read | `test/fixtures/abstract_speculate_pe/external_global_read.c` feasibility checkpoint | The current C frontend path does not produce executable `Cexternal` residual-transfer nodes for this focused source | Nearest executable external evidence remains unknown/imported `Ccall` extern effects | The test asserts `extern-read-created-D-during-transfer` is not fixture-reachable without a frontend/linker boundary change |
+
 Other command forms may still be handled during the module-local static Sparrow
 preanalysis/fixpoint, but they are not generally lowered into link-time
 residual equations.  In particular, allocation, string allocation, function

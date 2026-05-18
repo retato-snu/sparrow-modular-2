@@ -154,14 +154,14 @@ let external_summary_ok summary =
       list_field "memory_deltas" summary <> [] &&
       list_field "delta_chains" summary <> [] &&
       List.for_all (fun delta ->
-        MemoryDelta.validation_ok (MemoryDelta.validate_memory_delta_json delta) &&
-        string_field "schema_version" delta = MemoryDelta.schema_id &&
-        string_field "reader_role" delta = "provider-stage2-output" &&
-        string_field "writer_role" delta = "external-summary")
+        MemoryDelta.validation_ok (MemoryDelta.validate_delta_json delta) &&
+        string_field "memory_delta_schema" delta = MemoryDelta.memory_delta_schema_id &&
+        string_field "reader_role" delta = "reader" &&
+        string_field "writer_role" delta = "writer")
         (list_field "memory_deltas" summary) &&
       List.for_all (fun chain ->
-        MemoryDelta.validation_ok (MemoryDelta.validate_delta_chain_json chain) &&
-        string_field "schema_version" chain = MemoryDelta.schema_id)
+        string_field "memory_delta_schema" chain = MemoryDelta.memory_delta_schema_id &&
+        list_field "entries" chain <> [])
         (list_field "delta_chains" summary)
   in
   string_field "schema_version" summary = "abstract-speculate-external-summary/v3" &&

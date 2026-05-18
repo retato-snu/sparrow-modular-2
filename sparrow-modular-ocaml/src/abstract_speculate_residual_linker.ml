@@ -74,8 +74,6 @@ type external_summary_v3 = {
   delta_chains : Yojson.Safe.t list;
   global_effects : Yojson.Safe.t list;
   pointer_effects : Yojson.Safe.t list;
-  memory_deltas : Yojson.Safe.t list;
-  delta_chains : Yojson.Safe.t list;
   provenance : Yojson.Safe.t;
   v1_compat : external_summary_v1_compat;
 }
@@ -185,7 +183,6 @@ let external_summary_to_json summary =
       `String "pointer-memory-effect";
       `String "memory-delta";
     ];
-    "memory_delta_schema", `String MemoryDelta.schema_id;
     "return_effects", `List summary.return_effects;
     "memory_deltas", `List summary.memory_deltas;
     "delta_chains", `List summary.delta_chains;
@@ -599,11 +596,6 @@ let make_external_summary
     memory_effects
     |> List.filter (fun eff -> string_field "domain" eff = Some "pointer-memory-effect")
   in
-  let memory_deltas = List.map MemoryDelta.memory_delta_to_json memory_delta_records in
-  let delta_chains = List.map MemoryDelta.chain_json memory_delta_records in
-  let memory_deltas =
-    memory_deltas
-  in
   let v1_compat =
     {
       extern_scalar_value = ScalarCall.v1_extern_scalar_value_json scalar_return;
@@ -622,8 +614,6 @@ let make_external_summary
     delta_chains;
     global_effects;
     pointer_effects;
-    memory_deltas;
-    delta_chains;
     provenance;
     v1_compat;
   }

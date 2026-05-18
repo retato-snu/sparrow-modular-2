@@ -28,7 +28,6 @@
   abstract_speculate_residual_linking_oracle_suite_check
   abstract_speculate_residual_memory_delta_unit
   abstract_speculate_residual_scalar_call_unit
-  abstract_speculate_residual_memory_delta_unit
   abstract_speculate_residual_solver_unit
   abstract_speculate_itv_residual_cell_unit
   abstract_speculate_staged_transfer
@@ -312,6 +311,8 @@
   fixtures/abstract_speculate_pe/branch_join.c
   fixtures/abstract_speculate_pe/narrowing_enabled_loop.c
   fixtures/abstract_speculate_pe/extern_dependent_call.c
+  fixtures/abstract_speculate_pe/known_dynamic_call.c
+  fixtures/abstract_speculate_pe/external_global_read.c
   fixtures/abstract_speculate_pe/extern_independent_static.c
   fixtures/abstract_speculate_pe/local_global_memory.c
   fixtures/abstract_speculate_pe/cross_file_unresolved_main.c

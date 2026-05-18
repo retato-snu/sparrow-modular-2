@@ -850,7 +850,7 @@ let memory_delta_failures witness_id residual =
        |> List.concat_map (fun delta ->
             let provider_module = string_field "provider_module" delta in
             let location = string_field "location" delta in
-            MemoryDelta.validate_memory_delta_json delta
+            MemoryDelta.validate_delta_json delta
             |> MemoryDelta.validation_reasons
             |> List.map (fun reason ->
                  fail Memory_location Residual_to_oracle reason
