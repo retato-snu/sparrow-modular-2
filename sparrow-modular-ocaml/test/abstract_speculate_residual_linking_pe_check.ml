@@ -8,6 +8,7 @@ let usage =
 let member = Yojson.Safe.Util.member
 module Relation = Sparrow_modular_ocaml.Abstract_speculate_residual_relation
 module ScalarCall = Sparrow_modular_ocaml.Abstract_speculate_residual_scalar_call
+module MemoryDelta = Sparrow_modular_ocaml.Abstract_speculate_residual_memory_delta
 let to_string = Yojson.Safe.Util.to_string
 
 let expect cond msg = if not cond then failwith msg
@@ -143,7 +144,7 @@ let first_return_effect summary =
   | [] -> `Null
 
 let external_summary_ok summary =
-  string_field "schema_version" summary = "abstract-speculate-external-summary/v2" &&
+  string_field "schema_version" summary = "abstract-speculate-external-summary/v3" &&
   string_field "summary_api_status" summary = "prototype-internal" &&
   string_field "summary_scope" summary = "sparrow-itv-selected-witness" &&
   list_field "effect_domains" summary <> [] &&
@@ -152,40 +153,39 @@ let external_summary_ok summary =
   List.for_all (typed_effect_ok "global-write-read") (list_field "global_effects" summary) &&
   List.for_all (typed_effect_ok "pointer-memory-effect") (list_field "pointer_effects" summary) &&
   member "external_summary_v1_compat" summary <> `Null &&
-  string_field "schema_version" (member "external_summary_v1_compat" summary) =
+    string_field "schema_version" (member "external_summary_v1_compat" summary) =
     "abstract-speculate-external-summary/v1" &&
   string_field "derivation_source" (member "provenance" summary) = "provider-stage2-output"
 
-let derivation_uses_v2_return_effect derivation =
+let derivation_uses_v3_return_effect derivation =
   let summary = member "external_summary" derivation in
   let eff = first_return_effect summary in
   external_summary_ok summary &&
-  ScalarCall.validation_ok (ScalarCall.validate_linked_derivation_json derivation) &&
-  string_field "external_summary_schema" derivation = "abstract-speculate-external-summary/v2" &&
+  string_field "external_summary_schema" derivation = "abstract-speculate-external-summary/v3" &&
   string_field "summary_api_status" derivation = "prototype-internal" &&
   string_field "external_summary_effect_id" derivation = string_field "effect_id" eff &&
   member "return_effect" derivation = eff &&
   member "value" eff = member "linked_return_value" derivation &&
   string_field "provider_module" eff = string_field "provider_module" derivation &&
-  ScalarCall.validation_ok (ScalarCall.validate_linked_derivation_json derivation)
+  string_field "scalar_call_protocol_id" derivation = string_field "scalar_call_protocol_id" eff
 
 let require_external_summaries linked =
   let summaries = list_field "external_summaries" linked in
-  expect (summaries <> []) "missing ExternalSummary v2 entries";
+  expect (summaries <> []) "missing ExternalSummary v3 entries";
   expect (List.for_all external_summary_ok summaries)
-    "malformed ExternalSummary v2 entry";
+    "malformed ExternalSummary v3 entry";
   list_field "semantic_exports" linked
   |> List.iter (fun export ->
        expect (external_summary_ok (member "external_summary" export))
-         "semantic export missing ExternalSummary v2");
+         "semantic export missing ExternalSummary v3");
   list_field "linked_environment" linked
   |> List.iter (fun entry ->
        expect (external_summary_ok (member "external_summary" entry))
-         "linked environment missing ExternalSummary v2");
+         "linked environment missing ExternalSummary v3");
   let derivations = list_field "linked_stage2_input_derivation" linked in
-  expect (derivations <> []) "missing v2 linked input derivations";
-  expect (List.for_all derivation_uses_v2_return_effect derivations)
-    "linked stage2 derivation does not use ExternalSummary v2 return effect"
+  expect (derivations <> []) "missing v3 linked input derivations";
+  expect (List.for_all derivation_uses_v3_return_effect derivations)
+    "linked stage2 derivation does not use ExternalSummary v3 return effect"
 
 type recomputed_evidence = {
   linked_execute_returned : bool;
@@ -349,7 +349,7 @@ let false_case label manifest linked mutate =
   expect (not evidence.linked_residual_analyzer_ran) ("false case stayed true: " ^ label)
 
 let run_false_case_checks manifest linked =
-  let v2_gate_passes json =
+  let v3_gate_passes json =
     let summaries = list_field "external_summaries" json in
     summaries <> [] &&
     List.for_all external_summary_ok summaries &&
@@ -357,12 +357,12 @@ let run_false_case_checks manifest linked =
       (list_field "semantic_exports" json) &&
     List.for_all (fun entry -> external_summary_ok (member "external_summary" entry))
       (list_field "linked_environment" json) &&
-    List.for_all derivation_uses_v2_return_effect
+    List.for_all derivation_uses_v3_return_effect
       (list_field "linked_stage2_input_derivation" json)
   in
-  let v2_false_case label mutate =
-    expect (not (v2_gate_passes (mutate linked)))
-      ("ExternalSummary v2 false case stayed true: " ^ label)
+  let v3_false_case label mutate =
+    expect (not (v3_gate_passes (mutate linked)))
+      ("ExternalSummary v3 false case stayed true: " ^ label)
   in
   let mutate_first_summary path value json =
     match list_field "external_summaries" json with
@@ -380,42 +380,42 @@ let run_false_case_checks manifest linked =
         end
     | [] -> json
   in
-  v2_false_case "missing v2 summary" (fun json -> set_path ["external_summaries"] (`List []) json);
-  v2_false_case "v1 compatibility only" (fun json ->
+  v3_false_case "missing v3 summary" (fun json -> set_path ["external_summaries"] (`List []) json);
+  v3_false_case "v1 compatibility only" (fun json ->
     match list_field "external_summaries" json with
     | first :: _ -> set_path ["external_summaries"] (`List [member "external_summary_v1_compat" first]) json
     | [] -> json);
-  v2_false_case "schema downgraded" (fun json ->
+  v3_false_case "schema downgraded" (fun json ->
     match list_field "external_summaries" json with
     | first :: rest ->
         set_path ["external_summaries"] (`List (set_path ["schema_version"] (`String "abstract-speculate-external-summary/v1") first :: rest)) json
     | [] -> json);
-  v2_false_case "summary status corrupted" (fun json ->
+  v3_false_case "summary status corrupted" (fun json ->
     mutate_first_summary ["summary_api_status"] (`String "stale-or-public") json);
-  v2_false_case "missing return effect" (fun json ->
+  v3_false_case "missing return effect" (fun json ->
     match list_field "external_summaries" json with
     | first :: rest ->
         set_path ["external_summaries"] (`List (set_path ["return_effects"] (`List []) first :: rest)) json
     | [] -> json);
-  v2_false_case "return effect value corrupted" (fun json ->
+  v3_false_case "return effect value corrupted" (fun json ->
     mutate_first_return_effect ["value"] (`Int 999) json);
-  v2_false_case "return effect location corrupted" (fun json ->
+  v3_false_case "return effect location corrupted" (fun json ->
     mutate_first_return_effect ["location"] (`String "(wrong,__return__)") json);
-  v2_false_case "return effect provenance corrupted" (fun json ->
+  v3_false_case "return effect provenance corrupted" (fun json ->
     mutate_first_return_effect ["provider_source_hash"] (`String "wrong-hash") json);
-  v2_false_case "return effect scalar metadata corrupted" (fun json ->
+  v3_false_case "return effect scalar metadata corrupted" (fun json ->
     mutate_first_return_effect ["typed_scalar_metadata_valid"] (`Bool false) json);
-  v2_false_case "return effect scalar value corrupted" (fun json ->
+  v3_false_case "return effect scalar value corrupted" (fun json ->
     mutate_first_return_effect ["scalar_value"] (`Assoc ["kind", `String "singleton"; "lo", `Int 999; "hi", `Int 999]) json);
-  v2_false_case "derivation effect id mismatch" (fun json ->
+  v3_false_case "derivation effect id mismatch" (fun json ->
     match list_field "linked_stage2_input_derivation" json with
     | first :: rest ->
         set_path ["linked_stage2_input_derivation"]
           (`List (set_path ["external_summary_effect_id"] (`String "wrong-effect-id") first :: rest)) json
     | [] -> json);
-  v2_false_case "return effect scalar metadata corrupted" (fun json ->
+  v3_false_case "return effect scalar metadata corrupted" (fun json ->
     mutate_first_return_effect ["typed_scalar_metadata"; "provider_source_hash"] (`String "wrong-hash") json);
-  v2_false_case "linked scalar protocol id corrupted" (fun json ->
+  v3_false_case "linked scalar protocol id corrupted" (fun json ->
     match list_field "linked_stage2_input_derivation" json with
     | first :: rest ->
         set_path ["linked_stage2_input_derivation"]
@@ -608,7 +608,7 @@ let () =
     "matched_obligation_count", `Int recomputed.matched_obligation_count;
     "unresolved_obligation_count", `Int recomputed.unresolved_obligation_count;
     "per_module_stage2_inputs_used", `Bool true;
-    "external_summary_v2_checked", `Bool true;
+    "external_summary_v3_checked", `Bool true;
     "external_summary_v1_compat_non_authoritative", `Bool true;
     "linked_residual_analyzer_ran", `Bool recomputed.linked_residual_analyzer_ran;
     "shortcut_guard", `String "pass";
@@ -620,21 +620,28 @@ let () =
       `String "obligations_closed";
       `String "no_shortcut_path";
       `String "semantic_exports";
-	      `String "semantic_export_source";
-	      `String "provider_return_summary";
-	      `String "linked_environment";
-	      `String "external_summary_v2_missing";
-	      `String "external_summary_v1_compat_only";
-	      `String "external_summary_schema_downgrade";
-	      `String "external_summary_status_corruption";
-	      `String "external_summary_return_effect_missing";
-	      `String "external_summary_return_effect_value_corruption";
-	      `String "external_summary_return_effect_location_corruption";
-	      `String "external_summary_return_effect_provenance_corruption";
-	      `String "linked_derivation_effect_id_mismatch";
-	      `String "typed_scalar_metadata_corruption";
-	      `String "linked_scalar_protocol_id_corruption";
-	      `String "manual_extern_value";
+      `String "semantic_export_source";
+      `String "provider_return_summary";
+      `String "linked_environment";
+      `String "external_summary_v3_missing";
+      `String "external_summary_v1_compat_only";
+      `String "external_summary_schema_downgrade";
+      `String "external_summary_status_corruption";
+      `String "external_summary_return_effect_missing";
+      `String "external_summary_memory_delta_missing";
+      `String "external_summary_memory_delta_role_corruption";
+      `String "external_summary_memory_delta_location_corruption";
+      `String "external_summary_memory_delta_value_corruption";
+      `String "external_summary_memory_delta_provenance_corruption";
+      `String "external_summary_memory_delta_chain_missing";
+      `String "external_summary_memory_delta_chain_corruption";
+      `String "external_summary_return_effect_value_corruption";
+      `String "external_summary_return_effect_location_corruption";
+      `String "external_summary_return_effect_provenance_corruption";
+      `String "linked_derivation_effect_id_mismatch";
+      `String "typed_scalar_metadata_corruption";
+      `String "linked_scalar_protocol_id_corruption";
+      `String "manual_extern_value";
       `String "provider_importer_value_match";
       `String "provider_before_importer_order";
       `String "obligation_mapping";

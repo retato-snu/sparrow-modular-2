@@ -8,6 +8,7 @@ module MetaSparse = Abstract_speculate_meta_sparse
 module Residual = Abstract_speculate_residual_value
 module Solver = Abstract_speculate_residual_solver
 module ScalarCall = Abstract_speculate_residual_scalar_call
+module MemoryDelta = Abstract_speculate_residual_memory_delta
 
 let schema_version = "abstract-speculate-residual-linking-pe/v1"
 
@@ -67,10 +68,14 @@ type external_summary_v1_compat = {
   provenance : Yojson.Safe.t;
 }
 
-type external_summary_v2 = {
+type external_summary_v3 = {
   return_effects : Yojson.Safe.t list;
+  memory_deltas : Yojson.Safe.t list;
+  delta_chains : Yojson.Safe.t list;
   global_effects : Yojson.Safe.t list;
   pointer_effects : Yojson.Safe.t list;
+  memory_deltas : Yojson.Safe.t list;
+  delta_chains : Yojson.Safe.t list;
   provenance : Yojson.Safe.t;
   v1_compat : external_summary_v1_compat;
 }
@@ -86,7 +91,7 @@ type semantic_export = {
   abstract_return_value : string;
   provider_row : Yojson.Safe.t;
   provider_phase_index : int;
-  external_summary : external_summary_v2;
+  external_summary : external_summary_v3;
 }
 
 type linked_environment_entry = {
@@ -170,17 +175,32 @@ let external_summary_v1_compat_to_json summary =
 
 let external_summary_to_json summary =
   `Assoc [
-    "schema_version", `String "abstract-speculate-external-summary/v2";
-    "summary_api_status", `String "prototype-internal";
+    "schema_version", `String MemoryDelta.external_summary_schema_id;
+    "summary_api_status", `String MemoryDelta.summary_api_status;
     "summary_scope", `String "sparrow-itv-selected-witness";
+    "memory_delta_schema", `String MemoryDelta.memory_delta_schema_id;
     "effect_domains", `List [
       `String "return";
       `String "global-write-read";
       `String "pointer-memory-effect";
+      `String "memory-delta";
     ];
+    "memory_delta_schema", `String MemoryDelta.schema_id;
     "return_effects", `List summary.return_effects;
+    "memory_deltas", `List summary.memory_deltas;
+    "delta_chains", `List summary.delta_chains;
     "global_effects", `List summary.global_effects;
     "pointer_effects", `List summary.pointer_effects;
+    "memory_effect_projection_status", `String "v2-compatible-non-authoritative";
+    "typed_memory_delta_validation", MemoryDelta.validation_result_json (MemoryDelta.validate_summary_json (`Assoc [
+      "schema_version", `String MemoryDelta.external_summary_schema_id;
+      "summary_api_status", `String MemoryDelta.summary_api_status;
+      "summary_scope", `String "sparrow-itv-selected-witness";
+      "memory_delta_schema", `String MemoryDelta.memory_delta_schema_id;
+      "memory_deltas", `List summary.memory_deltas;
+      "delta_chains", `List summary.delta_chains;
+      "provenance", summary.provenance;
+    ]));
     "provenance", summary.provenance;
     "external_summary_v1_compat", external_summary_v1_compat_to_json summary.v1_compat;
   ]
@@ -525,31 +545,52 @@ let make_external_summary
     | Error reason -> failwith ("invalid scalar return protocol for " ^ export_name ^ ": " ^ reason)
   in
   let return_effect = ScalarCall.return_effect_json scalar_return in
-  let memory_effects =
+  let memory_delta_records =
     provider_row
     |> row_memory
     |> List.filter_map (fun cell ->
          let location = cell_location cell in
          if location = "" || location = return_location then None
          else
-           let domain = effect_location_kind location in
+           let domain_s = effect_location_kind location in
+           let domain =
+             match MemoryDelta.domain_of_string domain_s with
+             | Ok domain -> domain
+             | Error reason -> failwith reason
+           in
            let summary_location =
-             if domain = "pointer-memory-effect" then "(" ^ export_name ^ ",p)"
+             if domain_s = "pointer-memory-effect" then "(" ^ export_name ^ ",p)"
              else location
            in
-           Some (typed_effect
-             ~domain
-             ~effect_id:(effect_id ~provider_module ~export_name ~domain ~location:summary_location)
-             ~symbol:(if domain = "pointer-memory-effect" then export_name else location)
-             ~location:summary_location
-             ~value_json:(`String (cell_value cell))
-             ~provider_module
-             ~provider_source_hash
-             ~provider_artifact_path
-             ~provider_phase_index
-             ~derivation_source:"provider-stage2-output"
-             ~source_evidence_path:("provider_row.memory:" ^ location)))
+           let symbol = if domain_s = "pointer-memory-effect" then export_name else location in
+           match
+             MemoryDelta.make_provider_delta
+               ~provider_module
+               ~provider_source_hash
+               ~provider_artifact_path
+               ~provider_phase_index
+               ~export_name
+               ~domain
+               ~raw_location:location
+               ~summary_location
+               ~symbol
+               ~value:(cell_value cell)
+               ~source_evidence_path:("provider_row.memory:" ^ location)
+           with
+           | Ok delta -> Some delta
+           | Error reason -> failwith ("invalid v3 memory delta for " ^ export_name ^ ": " ^ reason))
   in
+  let memory_deltas = List.map MemoryDelta.delta_to_json memory_delta_records in
+  let delta_chains =
+    memory_delta_records
+    |> List.map (fun delta ->
+         `Assoc [
+           "chain_id", `String (MemoryDelta.chain_id delta);
+           "memory_delta_schema", `String MemoryDelta.memory_delta_schema_id;
+           "entries", `List (MemoryDelta.delta_chain_json delta);
+         ])
+  in
+  let memory_effects = List.map MemoryDelta.compatibility_effect_json memory_delta_records in
   let global_effects =
     memory_effects
     |> List.filter (fun eff -> string_field "domain" eff = Some "global-write-read")
@@ -558,6 +599,11 @@ let make_external_summary
     memory_effects
     |> List.filter (fun eff -> string_field "domain" eff = Some "pointer-memory-effect")
   in
+  let memory_deltas = List.map MemoryDelta.memory_delta_to_json memory_delta_records in
+  let delta_chains = List.map MemoryDelta.chain_json memory_delta_records in
+  let memory_deltas =
+    memory_deltas
+  in
   let v1_compat =
     {
       extern_scalar_value = ScalarCall.v1_extern_scalar_value_json scalar_return;
@@ -565,15 +611,19 @@ let make_external_summary
       global_write_summary_placeholder = `Assoc [
         "status", `String "compat-v1-non-authoritative";
         "writes", `List [];
-        "precision", `String "superseded-by-external-summary-v2";
+        "precision", `String "superseded-by-external-summary-v3";
       ];
       provenance;
     }
   in
   {
     return_effects = [return_effect];
+    memory_deltas;
+    delta_chains;
     global_effects;
     pointer_effects;
+    memory_deltas;
+    delta_chains;
     provenance;
     v1_compat;
   }
@@ -705,15 +755,15 @@ let linked_environment_for_matches matches (semantic_exports : semantic_export l
          semantic_export;
        })
 
-let primary_return_effect (summary : external_summary_v2) =
+let primary_return_effect (summary : external_summary_v3) =
   match summary.return_effects with
   | eff :: _ -> eff
-  | [] -> failwith "ExternalSummary v2 has no return effect for linked import"
+  | [] -> failwith "ExternalSummary v3 has no return effect for linked import"
 
 let return_effect_id summary =
   match string_field "effect_id" (primary_return_effect summary) with
   | Some id -> id
-  | None -> failwith "ExternalSummary v2 return effect missing effect_id"
+  | None -> failwith "ExternalSummary v3 return effect missing effect_id"
 
 let scalar_return_of_semantic_export export =
   let effect_id = return_effect_id export.external_summary in
@@ -768,7 +818,7 @@ let linked_stage2_input_for_importer importer linked_environment =
               "abstract_return_value", `String entry.semantic_export.abstract_return_value;
               "provider_phase_index", `Int entry.semantic_export.provider_phase_index;
               "derivation_source", `String "provider-stage2-output";
-              "external_summary_schema", `String "abstract-speculate-external-summary/v2";
+              "external_summary_schema", `String MemoryDelta.external_summary_schema_id;
               "summary_api_status", `String "prototype-internal";
               "external_summary_effect_id", `String (return_effect_id entry.semantic_export.external_summary);
               "return_effect", primary_return_effect entry.semantic_export.external_summary;
@@ -822,7 +872,7 @@ let linked_input_derivation_json linked_environment =
            "effect_reason", `String "linked-provider-return";
            "stage2_obligation", `String "dynamic external/link fact derived from provider stage2 output";
            "derivation_source", `String "provider-stage2-output";
-           "external_summary_schema", `String "abstract-speculate-external-summary/v2";
+           "external_summary_schema", `String MemoryDelta.external_summary_schema_id;
            "summary_api_status", `String "prototype-internal";
            "external_summary_effect_id", `String (return_effect_id entry.semantic_export.external_summary);
            "return_effect", primary_return_effect entry.semantic_export.external_summary;

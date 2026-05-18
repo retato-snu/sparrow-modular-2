@@ -332,7 +332,9 @@ let validate_linked_derivation_json derivation =
     reasons
     |> add (string_field "effect_reason" derivation = "linked-provider-return") "effect_reason_mismatch"
     |> add (string_field "derivation_source" derivation = "provider-stage2-output") "derivation_source_mismatch"
-    |> add (string_field "external_summary_schema" derivation = "abstract-speculate-external-summary/v2") "external_summary_schema_mismatch"
+    |> add (let schema = string_field "external_summary_schema" derivation in
+              schema = "abstract-speculate-external-summary/v2" ||
+              schema = Abstract_speculate_residual_memory_delta.external_summary_schema_id) "external_summary_schema_mismatch"
     |> add (string_field "summary_api_status" derivation = "prototype-internal") "summary_api_status_mismatch"
     |> add (string_field "external_summary_effect_id" derivation = string_field "effect_id" return_effect) "derivation_effect_id_mismatch"
     |> add (return_effect = summary_return) "return_effect_not_structurally_equal_to_summary"

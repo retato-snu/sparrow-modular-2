@@ -9,6 +9,7 @@
 
 module ItvCell = Abstract_speculate_itv_residual_cell
 module ScalarCall = Abstract_speculate_residual_scalar_call
+module MemoryDelta = Abstract_speculate_residual_memory_delta
 
 type observation_domain =
   | Return_value
@@ -151,6 +152,8 @@ let memory_cell ~location row =
 
 let semantic_exports linked = list_field "semantic_exports" linked
 let linked_environment linked = list_field "linked_environment" linked
+let external_summaries linked = list_field "external_summaries" linked
+let memory_deltas linked = external_summaries linked |> List.concat_map (list_field "memory_deltas")
 
 let observation_domain_to_string = function
   | Return_value -> "return"
@@ -314,12 +317,25 @@ let scalar_protocol_failures witness_id residual =
          ("linked_stage2_input_derivation:" ^ witness_id ^ ":" ^ export_name)
          entry)
 
+
+let memory_delta_failures witness_id residual =
+  list_field "external_summaries" residual
+  |> List.mapi (fun index summary ->
+       match MemoryDelta.validate_summary_json summary with
+       | Ok () -> []
+       | Error reasons ->
+           reasons
+           |> List.map (fun reason ->
+                fail Memory_location Residual_to_oracle reason
+                  ("external_summaries:" ^ witness_id ^ ":" ^ string_of_int index)))
+  |> List.flatten
+
 let primary_linkage_comparison linked =
   let exports = semantic_exports linked in
   let env = linked_environment linked in
   let derivation = list_field "linked_stage2_input_derivation" linked in
   let base_failures =
-    scalar_protocol_failures "primary" linked
+    scalar_protocol_failures "primary" linked @ memory_delta_failures "primary" linked
     |> fun fs -> if exports = [] then fail Return_value Residual_to_oracle "missing semantic exports" "semantic_exports" :: fs else fs
     |> fun fs -> if env = [] then fail Provider_binding Residual_to_oracle "missing linked environment" "linked_environment" :: fs else fs
     |> fun fs -> if derivation = [] then fail Call_effect Residual_to_oracle "missing linked stage2 derivation" "linked_stage2_input_derivation" :: fs else fs
@@ -687,8 +703,18 @@ let failure_taxonomy_json =
     `String "missing_from_residual";
     `String "missing_from_origin";
     `String "value_mismatch";
+    `String "memory_delta_role_mismatch";
+    `String "memory_delta_location_mismatch";
+    `String "memory_delta_value_transition_mismatch";
+    `String "memory_delta_provenance_mismatch";
+    `String "memory_delta_chain_missing";
     `String "typed_metadata_mismatch";
     `String "typed_scalar_protocol_mismatch";
+    `String "memory_delta_role_mismatch";
+    `String "memory_delta_location_mismatch";
+    `String "memory_delta_value_transition_mismatch";
+    `String "memory_delta_provenance_mismatch";
+    `String "memory_delta_chain_missing";
     `String "provenance_missing";
     `String "unclassified_universe_fact";
   ]
@@ -817,6 +843,19 @@ let semantic_export_facts witness_id residual =
       "artifact_path", `String (string_field "provider_artifact_path" export);
     ])
 
+let memory_delta_failures witness_id residual =
+  external_summaries residual
+  |> List.concat_map (fun summary ->
+       list_field "memory_deltas" summary
+       |> List.concat_map (fun delta ->
+            let provider_module = string_field "provider_module" delta in
+            let location = string_field "location" delta in
+            MemoryDelta.validate_memory_delta_json delta
+            |> MemoryDelta.validation_reasons
+            |> List.map (fun reason ->
+                 fail Memory_location Residual_to_oracle reason
+                   ("external_summaries.memory_deltas:" ^ witness_id ^ ":" ^ provider_module ^ ":" ^ location))))
+
 let semantic_export_failures witness_id residual oracle =
   semantic_exports residual |> List.concat_map (fun export ->
     let name = string_field "export_name" export in
@@ -911,7 +950,8 @@ let full_itv_evidence_failures witness_id residual oracle =
            ("linked_stage2_input_derivation:" ^ witness_id ^ ":" ^ export_name)
            entry)
   in
-  scalar_protocol_failures
+  let memory_delta_failures = memory_delta_failures witness_id residual in
+  scalar_protocol_failures @ memory_delta_failures
   |> fun fs -> if linked_environment residual = [] then fail Provider_binding Residual_to_oracle "missing_from_residual" ("linked_environment:" ^ witness_id) :: fs else fs
   |> fun fs -> if list_field "linked_stage2_input_derivation" residual = [] then fail Call_effect Residual_to_oracle "missing_from_residual" ("linked_stage2_input_derivation:" ^ witness_id) :: fs else fs
   |> fun fs -> if list_field "phase_log" residual = [] then fail Phase_ordering Residual_to_oracle "missing_from_residual" ("phase_log:" ^ witness_id) :: fs else fs
@@ -987,6 +1027,7 @@ let full_itv_semantic_relation_json ~witness_id ~residual ~oracle =
   in
   let export_failures = semantic_export_failures witness_id residual oracle in
   let evidence_failures = full_itv_evidence_failures witness_id residual oracle in
+  let _memory_delta_validation_failures = memory_delta_failures witness_id residual in
   let typed_metadata_failures =
     residual_table_facts @ oracle_table_facts
     |> List.filter (fun fact -> not (bool_field "typed_input_metadata_valid" fact))

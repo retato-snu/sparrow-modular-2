@@ -103,7 +103,7 @@ let () =
         "linked_return_value", `Int 7;
         "effect_reason", `String "linked-provider-return";
         "derivation_source", `String "provider-stage2-output";
-        "external_summary_schema", `String "abstract-speculate-external-summary/v2";
+        "external_summary_schema", `String Sparrow_modular_ocaml.Abstract_speculate_residual_memory_delta.external_summary_schema_id;
         "summary_api_status", `String "prototype-internal";
         "external_summary_effect_id", member "effect_id" eff;
         "return_effect", eff;

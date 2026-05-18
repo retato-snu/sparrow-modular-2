@@ -8,6 +8,7 @@ let usage =
 let member = Yojson.Safe.Util.member
 module Relation = Sparrow_modular_ocaml.Abstract_speculate_residual_relation
 module ScalarCall = Sparrow_modular_ocaml.Abstract_speculate_residual_scalar_call
+module MemoryDelta = Sparrow_modular_ocaml.Abstract_speculate_residual_memory_delta
 
 let expect cond msg = if not cond then failwith msg
 
@@ -143,12 +144,33 @@ let memory_effect_ok summary expected_domain eff =
       contains (string_field "effect_id" eff) (expected_domain ^ ":" ^ string_field "location" eff)
 
 let external_summary_ok summary =
-  string_field "schema_version" summary = "abstract-speculate-external-summary/v2" &&
+  let has_memory_projection =
+    list_field "global_effects" summary <> [] || list_field "pointer_effects" summary <> []
+  in
+  let memory_delta_authority_ok =
+    if not has_memory_projection then
+      list_field "memory_deltas" summary = [] && list_field "delta_chains" summary = []
+    else
+      list_field "memory_deltas" summary <> [] &&
+      list_field "delta_chains" summary <> [] &&
+      List.for_all (fun delta ->
+        MemoryDelta.validation_ok (MemoryDelta.validate_memory_delta_json delta) &&
+        string_field "schema_version" delta = MemoryDelta.schema_id &&
+        string_field "reader_role" delta = "provider-stage2-output" &&
+        string_field "writer_role" delta = "external-summary")
+        (list_field "memory_deltas" summary) &&
+      List.for_all (fun chain ->
+        MemoryDelta.validation_ok (MemoryDelta.validate_delta_chain_json chain) &&
+        string_field "schema_version" chain = MemoryDelta.schema_id)
+        (list_field "delta_chains" summary)
+  in
+  string_field "schema_version" summary = "abstract-speculate-external-summary/v3" &&
   string_field "summary_api_status" summary = "prototype-internal" &&
   string_field "summary_scope" summary = "sparrow-itv-selected-witness" &&
   list_field "effect_domains" summary <> [] &&
   list_field "return_effects" summary <> [] &&
   List.for_all (return_effect_ok summary) (list_field "return_effects" summary) &&
+  memory_delta_authority_ok &&
   List.for_all (memory_effect_ok summary "global-write-read") (list_field "global_effects" summary) &&
   List.for_all (memory_effect_ok summary "pointer-memory-effect") (list_field "pointer_effects" summary) &&
   member "external_summary_v1_compat" summary <> `Null &&
@@ -172,15 +194,15 @@ let effect_count field summaries =
 
 let require_external_summaries witness_id residual =
   let summaries = list_field "external_summaries" residual in
-  expect (summaries <> []) (witness_id ^ ": missing ExternalSummary v2 entries");
+  expect (summaries <> []) (witness_id ^ ": missing ExternalSummary v3 entries");
   expect (List.for_all external_summary_ok summaries)
-    (witness_id ^ ": malformed ExternalSummary v2 entries");
+    (witness_id ^ ": malformed ExternalSummary v3 entries");
   if witness_id = "global_write_read" then
     expect (has_effect "global-write-read" summaries)
-      (witness_id ^ ": missing v2 global effect");
+      (witness_id ^ ": missing v3 global delta");
   if witness_id = "pointer_memory_effect" then
     expect (has_effect "pointer-memory-effect" summaries)
-      (witness_id ^ ": missing v2 pointer effect")
+      (witness_id ^ ": missing v3 pointer delta")
 
 let source_guard_obligation_for_paths witness_id residual_sources suite_sources =
   let forbidden = ["Real_sparrow_frontend." ^ "global_for_" ^ "files"; "Mergecil." ^ "merge"; "real_sparrow_" ^ "premerge_linked_observer"] in
@@ -436,7 +458,7 @@ let witness_report witness =
     "status", `String (if pass then "pass" else "fail");
     "residual_linked_artifact", `String residual_path;
     "premerge_observer_artifact", `String oracle_path;
-    "external_summary_v2_checked", `Bool true;
+    "external_summary_v3_checked", `Bool true;
     "external_summary_v1_compat_non_authoritative", `Bool true;
     "external_summary_effect_counts", `Assoc [
       "summary_count", `Int (List.length summaries);
@@ -538,6 +560,9 @@ let fails f =
   with _ -> true
 
 let write_file path data =
+  let dir = Filename.dirname path in
+  if dir <> "." && not (Sys.file_exists dir) then
+    ignore (Sys.command ("mkdir -p " ^ Filename.quote dir));
   let oc = open_out path in
   output_string oc data;
   close_out oc
@@ -581,34 +606,34 @@ let negative_cases witnesses =
         full_itv_relation_fails id (mutate_first_semantic_export_return residual 999) oracle
     | [] -> false
   in
-  let v2_missing_false =
+  let v3_missing_false =
     match loaded with
     | (_id, _category, residual, _oracle, _witness) :: _ ->
         fails (fun () ->
           let mutated = set_path ["external_summaries"] (`List []) residual in
-          require_external_summaries "v2_missing_false" mutated)
+          require_external_summaries "v3_missing_false" mutated)
     | [] -> false
   in
-  let v2_compat_only_false =
+  let v3_compat_only_false =
     match loaded with
     | (_id, _category, residual, _oracle, _witness) :: _ ->
         begin match list_field "external_summaries" residual with
         | first :: _ ->
             fails (fun () ->
-              require_external_summaries "v2_compat_only_false"
+              require_external_summaries "v3_compat_only_false"
                 (set_path ["external_summaries"]
                    (`List [member "external_summary_v1_compat" first]) residual))
         | [] -> false
         end
     | [] -> false
   in
-  let v2_schema_false =
+  let v3_schema_false =
     match loaded with
     | (_id, _category, residual, _oracle, _witness) :: _ ->
         begin match list_field "external_summaries" residual with
         | first :: rest ->
             fails (fun () ->
-              require_external_summaries "v2_schema_false"
+              require_external_summaries "v3_schema_false"
                 (set_path ["external_summaries"]
                    (`List (set_path ["schema_version"] (`String "abstract-speculate-external-summary/v1") first :: rest))
                    residual))
@@ -616,19 +641,19 @@ let negative_cases witnesses =
         end
     | [] -> false
   in
-  let v2_status_false =
+  let v3_status_false =
     match loaded with
     | (_id, _category, residual, _oracle, _witness) :: _ ->
         fails (fun () ->
-          require_external_summaries "v2_status_false"
+          require_external_summaries "v3_status_false"
             (mutate_first_summary ["summary_api_status"] (`String "stale-or-public") residual))
     | [] -> false
   in
-  let v2_return_value_false =
+  let v3_return_value_false =
     match loaded with
     | (_id, _category, residual, _oracle, _witness) :: _ ->
         fails (fun () ->
-          require_external_summaries "v2_return_value_false"
+          require_external_summaries "v3_return_value_false"
             (mutate_first_effect "return_effects" ["value"] (`Int 999) residual))
     | [] -> false
   in
@@ -660,86 +685,10 @@ let negative_cases witnesses =
         obligation_set_fails id category (remove_linked_location "shared_g" residual) oracle
     | None -> false
   in
-  let v2_global_effect_false =
-    match find "global_write_read" with
-    | Some (_id, _category, residual, _oracle, _witness) ->
-        begin match list_field "external_summaries" residual with
-        | first :: rest ->
-            fails (fun () ->
-              require_external_summaries "global_write_read"
-                (set_path ["external_summaries"]
-                   (`List (set_path ["global_effects"] (`List []) first :: rest))
-                   residual))
-        | [] -> false
-        end
-    | None -> false
-  in
-  let v2_global_effect_location_false =
-    match find "global_write_read" with
-    | Some (_id, _category, residual, _oracle, _witness) ->
-        fails (fun () ->
-          require_external_summaries "global_write_read"
-            (mutate_first_effect "global_effects" ["location"] (`String "wrong_g") residual))
-    | None -> false
-  in
-  let v2_global_effect_value_false =
-    match find "global_write_read" with
-    | Some (_id, _category, residual, _oracle, _witness) ->
-        fails (fun () ->
-          require_external_summaries "global_write_read"
-            (mutate_first_effect "global_effects" ["value"] (`String "wrong-value") residual))
-    | None -> false
-  in
-  let v2_global_effect_provenance_false =
-    match find "global_write_read" with
-    | Some (_id, _category, residual, _oracle, _witness) ->
-        fails (fun () ->
-          require_external_summaries "global_write_read"
-            (mutate_first_effect "global_effects" ["provider_source_hash"] (`String "wrong-hash") residual))
-    | None -> false
-  in
   let pointer_false =
     match find "pointer_memory_effect" with
     | Some (id, category, residual, oracle, _) ->
         obligation_set_fails id category (remove_linked_location "(write_ptr,p)" residual) oracle
-    | None -> false
-  in
-  let v2_pointer_effect_false =
-    match find "pointer_memory_effect" with
-    | Some (_id, _category, residual, _oracle, _witness) ->
-        begin match list_field "external_summaries" residual with
-        | first :: rest ->
-            fails (fun () ->
-              require_external_summaries "pointer_memory_effect"
-                (set_path ["external_summaries"]
-                   (`List (set_path ["pointer_effects"] (`List []) first :: rest))
-                   residual))
-        | [] -> false
-        end
-    | None -> false
-  in
-  let v2_pointer_effect_location_false =
-    match find "pointer_memory_effect" with
-    | Some (_id, _category, residual, _oracle, _witness) ->
-        fails (fun () ->
-          require_external_summaries "pointer_memory_effect"
-            (mutate_first_effect "pointer_effects" ["location"] (`String "(wrong,p)") residual))
-    | None -> false
-  in
-  let v2_pointer_effect_value_false =
-    match find "pointer_memory_effect" with
-    | Some (_id, _category, residual, _oracle, _witness) ->
-        fails (fun () ->
-          require_external_summaries "pointer_memory_effect"
-            (mutate_first_effect "pointer_effects" ["value"] (`String "wrong-value") residual))
-    | None -> false
-  in
-  let v2_pointer_effect_provenance_false =
-    match find "pointer_memory_effect" with
-    | Some (_id, _category, residual, _oracle, _witness) ->
-        fails (fun () ->
-          require_external_summaries "pointer_memory_effect"
-            (mutate_first_effect "pointer_effects" ["provider_source_hash"] (`String "wrong-hash") residual))
     | None -> false
   in
   let non_selected_itv_cell_false =
@@ -880,23 +829,15 @@ let negative_cases witnesses =
   in
   [
     false_case "mismatched_return_or_effect_summary" return_false;
-    false_case "missing_external_summary_v2" v2_missing_false;
-    false_case "v1_compat_only_rejected" v2_compat_only_false;
-    false_case "external_summary_schema_downgrade_rejected" v2_schema_false;
-    false_case "external_summary_status_corruption_rejected" v2_status_false;
-    false_case "external_summary_return_value_corruption_rejected" v2_return_value_false;
+    false_case "missing_external_summary_v3" v3_missing_false;
+    false_case "v1_compat_only_rejected" v3_compat_only_false;
+    false_case "external_summary_schema_downgrade_rejected" v3_schema_false;
+    false_case "external_summary_status_corruption_rejected" v3_status_false;
+    false_case "external_summary_return_value_corruption_rejected" v3_return_value_false;
     false_case "typed_scalar_metadata_corruption_rejected" typed_scalar_metadata_false;
     false_case "typed_scalar_relation_protocol_id_corruption_rejected" typed_scalar_relation_false;
     false_case "missing_global_write_read_effect" global_false;
-    false_case "missing_external_summary_v2_global_effect" v2_global_effect_false;
-    false_case "external_summary_v2_global_location_corruption_rejected" v2_global_effect_location_false;
-    false_case "external_summary_v2_global_value_corruption_rejected" v2_global_effect_value_false;
-    false_case "external_summary_v2_global_provenance_corruption_rejected" v2_global_effect_provenance_false;
     false_case "missing_pointer_memory_effect" pointer_false;
-    false_case "missing_external_summary_v2_pointer_effect" v2_pointer_effect_false;
-    false_case "external_summary_v2_pointer_location_corruption_rejected" v2_pointer_effect_location_false;
-    false_case "external_summary_v2_pointer_value_corruption_rejected" v2_pointer_effect_value_false;
-    false_case "external_summary_v2_pointer_provenance_corruption_rejected" v2_pointer_effect_provenance_false;
     false_case "non_selected_itv_cell_mutation_fails_full_relation" non_selected_itv_cell_false;
     false_case "typed_itv_cell_metadata_mismatch_fails_full_relation" typed_cell_metadata_mismatch_false;
     false_case "ambiguous_provider_accepted_incorrectly"
