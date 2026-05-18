@@ -90,6 +90,38 @@ global/pointer effects, corrupted selected global/pointer location, value, or
 provenance, and linked stage-2 derivations that do not name the v2 return
 `effect_id`.
 
+
+### Typed scalar-call protocol boundary
+
+Scalar return/call evidence now passes through
+`Abstract_speculate_residual_scalar_call` before it is encoded into reports.
+The protocol is a typed envelope over the existing full-ITV residual-cell
+semantics (`Abstract_speculate_itv_residual_cell`); JSON fields are an encoding
+of that typed evidence, not the authority used to guess scalar calls.
+
+The linker constructs one `abstract-speculate-residual-scalar-call/v1` provider
+return value for each selected scalar return effect, then reuses that typed value
+for:
+
+- `external_summary_v1_compat.extern_scalar_value` and
+  `function_return_summary` compatibility fields;
+- `external_summary.return_effects` v2 return effects; and
+- embedded `return_effect` objects in `linked_stage2_input_derivation`.
+
+The additive metadata fields `scalar_protocol_schema`,
+`scalar_call_protocol_id`, `scalar_value_kind`, `typed_scalar_metadata_valid`,
+and `typed_scalar_metadata` record provider module/source hash, export name,
+return node/location, effect id, provider phase, concrete singleton result, and
+canonical full-ITV scalar representation.  The relation validates that linked
+derivations, return effects, v1 compatibility payloads, and duplicated embedded
+return effects agree on those fields.  A mismatch is reported as a
+`typed_scalar_protocol_mismatch` call-effect failure.
+
+This protocol deliberately excludes Oct and Taint and does not discover
+providers, schedule calls, resolve imports, traverse module lists, or broaden
+the existing call graph.  Those responsibilities remain in the existing
+residual-linker matching and scheduling flow.
+
 ### Domains
 
 The relation ranges over prototype witness artifacts, not arbitrary C programs. Its domains are:
@@ -116,8 +148,8 @@ Each witness report emits `full_itv_semantic_relation` with:
   intentionally excluded, or expected-but-not-emitted;
 - `failure_taxonomy` with bounded reasons:
   `missing_from_residual`, `missing_from_origin`, `value_mismatch`,
-  `provenance_missing`, `typed_metadata_mismatch`, and
-  `unclassified_universe_fact`;
+  `provenance_missing`, `typed_metadata_mismatch`,
+  `typed_scalar_protocol_mismatch`, and `unclassified_universe_fact`;
 - `canonicalization` for singleton intervals, finite ranges, Top, bottom/empty
   or unknown strings, and location-sensitive memory cells;
 - `residual_to_origin` and `origin_to_residual` bidirectional checks;
@@ -263,6 +295,7 @@ Ambiguous provider choices still fail with diagnostics. Deterministic multiple-i
 - No optimized or production-grade residual linker.
 - No final API freeze for the residual module/linker contract.
 - No final general memory/global/call-effect summary language; richer effect observations in the oracle suite remain witness-bounded prototype evidence.
+- The scalar-call protocol does not broaden provider discovery, import resolution, or call-graph traversal; it only types and validates scalar evidence selected by the existing linker flow.
 
 ## Coverage gap against frozen Sparrow
 
@@ -495,12 +528,42 @@ The suite-level report includes these obligations:
 - `mixed_role_chain_matches_oracle`;
 - `no_premerge_implementation_shortcut`;
 - `cyclic_residual_fixpoint_evidence`;
-- `cyclic_imported_value_exact_singleton_parity`.
+- `cyclic_imported_value_exact_singleton_parity`;
+- `typed_scalar_call_protocol_matches`.
 
-Negative-case coverage is represented in the report for mismatched values/effects, missing global/pointer observations, a non-selected Itv cell removal that fails the full relation while selected diagnostics still pass, ambiguous providers, invalid mixed-role propagation, shortcut leakage, missing oracle artifacts, witness identity mismatch, missing provenance, source-level removal of an imported cyclic observable sink write, and cycle-evidence falsification.
+Negative-case coverage is represented in the report for mismatched values/effects, typed scalar protocol metadata/protocol-id mismatches, missing global/pointer observations, a non-selected Itv cell removal that fails the full relation while selected diagnostics still pass, ambiguous providers, invalid mixed-role propagation, shortcut leakage, missing oracle artifacts, witness identity mismatch, missing provenance, source-level removal of an imported cyclic observable sink write, and cycle-evidence falsification.
 
 ## Topology support after the oracle-suite milestone
 
 The residual linker now supports deterministic multiple import/provider bindings, mixed importer/provider role chains, and checked cyclic function-import SCCs.  Binding ambiguity still fails if one importer import has more than one candidate provider.  Acyclic mixed roles are scheduled by a dependency DAG over function bindings; cyclic SCCs additionally emit a shared residual-equation/worklist run whose artifact evidence records topology, per-round export/environment snapshots, changed-binding counts, shared SCC equation/cell/dependency ids, state reads, worklist schedule, `shared_scc_final_cells`, accepted export provenance, and exact singleton imported-observable parity.  The current cyclic proof obligation is deliberately scoped to the oracle-suite witness relation and recomputable emitted-equation evidence; it is not an arbitrary-C or full product-domain theorem.
 
 Multiple extern roots are resolved by matching residual component provenance for the imported callee name, falling back to the singleton-root case for the original return-only witness.
+
+## Typed residual scalar-call protocol
+
+Residual scalar call evidence is now produced through the internal
+`Abstract_speculate_residual_scalar_call` protocol before it is encoded into
+compatibility JSON. The protocol is a thin envelope over the existing full
+Sparrow-Itv residual-cell canonicalization (`typed-itv-residual-cell/v1`); it
+is not a provider resolver, scheduler, import resolver, module traversal pass,
+or new scalar algebra.
+
+The legacy report surfaces remain present for compatibility:
+
+- `external_summary_v1_compat.extern_scalar_value`
+- `external_summary_v1_compat.function_return_summary`
+- `external_summary.return_effects`
+- `linked_stage2_input_derivation.return_effect`
+- `linked_stage2_input_derivation.external_summary`
+
+Additive scalar metadata is emitted consistently on the v1 scalar payload,
+function-return summary, v2 return effect, and linked derivation entries. The
+metadata includes `scalar_protocol_schema`, `scalar_call_protocol_id`,
+`scalar_value_model`, `scalar_value_kind`, provider identity/hash, export name,
+return node/location, return effect id, and `typed_scalar_metadata_valid`.
+Relation checks validate the shared metadata and surface
+`typed_scalar_protocol_mismatch` when fixture-guessed or inconsistent scalar
+call evidence is observed.
+
+Scope remains intentionally scalar/full-Itv only: Oct and Taint semantics,
+broader call-graph rewrites, and proof-system expansion are out of scope.

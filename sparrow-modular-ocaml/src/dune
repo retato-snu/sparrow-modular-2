@@ -3,7 +3,15 @@
 (library
  (name sparrow_modular_ocaml)
  (public_name sparrow_modular_ocaml.lib)
- (libraries metaocaml yojson unix batteries ocamlgraph goblint-cil goblint-cil.makecfg)
+ (libraries
+  metaocaml
+  yojson
+  unix
+  batteries
+  ocamlgraph
+  goblint-cil
+  goblint-cil.makecfg)
  (modules_without_implementation absDom absSem)
- (preprocess (pps ppx_compare ppx_deriving.std))
+ (preprocess
+  (pps ppx_compare ppx_deriving.std))
  (flags :standard -w -7-27-32-33-34-38-39-50))

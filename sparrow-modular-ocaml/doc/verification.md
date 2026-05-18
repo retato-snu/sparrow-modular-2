@@ -14,6 +14,7 @@ working directory.
 | Active build, typecheck, and test suite | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @runtest` | Dune completes successfully; this covers the aggregated active aliases in `test/dune`. |
 | Focused MetaOCaml sparse PE gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_metaocaml_sparse_pe` | Sparse PE source-lineage, module-boundary, provenance, BTA, residual, forbidden-shortcut, and audit reports are regenerated. |
 | Focused residual-linking prototype gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_residual_linking_pe` | The residual-linking prototype report is regenerated. |
+| Typed scalar-call protocol unit gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune exec test/abstract_speculate_residual_scalar_call_unit.bc` | Unit checks validate typed scalar constructors, full-Itv scalar normalization, v1/v2 JSON compatibility, and mismatch rejection. |
 | Focused residual-linking oracle-suite gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_residual_linking_oracle_suite` | The oracle-suite report is regenerated, including positive and negative witnesses. |
 | Documentation build | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @doc` | Package documentation builds successfully when documentation tooling is installed. |
 | Frozen baseline regression | `cd sparrow && opam exec --switch sparrow -- dune runtest --force` | The frozen baseline/oracle passes under its own switch. |
@@ -24,6 +25,30 @@ There is no dedicated lint alias in the current Dune configuration.  For docs
 changes, run the available Markdown linter directly on the touched file when it
 is installed; otherwise record the missing tool and rely on Dune/build checks
 plus review of the rendered Markdown table.
+
+
+## Typed residual scalar-call protocol checklist
+
+Use this focused checklist when validating changes for
+`.omx/plans/prd-residual-call-protocol-scalar.md`:
+
+1. Confirm scalar return/call evidence is constructed through the shared typed
+   scalar-call protocol before JSON encoding.
+2. Confirm legacy compatibility fields remain present: `extern_scalar_value`,
+   `function_return_summary`, `return_effects`, `external_summary`, and
+   `linked_stage2_input_derivation`.
+3. Confirm additive metadata (`scalar_protocol_schema`,
+   `scalar_call_protocol_id`, `scalar_value_kind`, and
+   `typed_scalar_metadata_valid`) is deterministic wherever the same return
+   effect is duplicated.
+4. Run the scalar unit gate, residual-linking PE gate, oracle-suite gate, and
+   proof alias.  Record any environment-only blocker with the focused alias that
+   did pass.
+5. Review negative evidence for value, location, provider hash, effect id, and
+   metadata mismatch rejection; the oracle relation should surface
+   `typed_scalar_protocol_mismatch` for scalar protocol violations.
+6. Reconfirm non-goals: no Oct/Taint semantics, no broad call-graph rewrite, no
+   proof-system expansion, and no fixture-only proof.
 
 ## Fresh Task 4 evidence
 

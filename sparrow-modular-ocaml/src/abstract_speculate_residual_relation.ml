@@ -8,6 +8,7 @@
    claim arbitrary-C semantic equivalence. *)
 
 module ItvCell = Abstract_speculate_itv_residual_cell
+module ScalarCall = Abstract_speculate_residual_scalar_call
 
 type observation_domain =
   | Return_value
@@ -51,6 +52,7 @@ type comparison = {
   oracle_to_residual : Yojson.Safe.t;
   failures : relation_failure list;
 }
+
 
 let member = Yojson.Safe.Util.member
 
@@ -294,12 +296,30 @@ let primary_phase_ordered linked ~provider_module ~importer_module ~export_name 
 
 let fail domain direction reason evidence_path = { domain; direction; reason; evidence_path }
 
+let scalar_protocol_failures_for_derivation direction evidence_path derivation =
+  match ScalarCall.validate_linked_derivation_json derivation with
+  | Ok () -> []
+  | Error reasons ->
+      [
+        fail Call_effect direction
+          ("typed_scalar_protocol_mismatch:" ^ String.concat "," reasons)
+          evidence_path;
+      ]
+
+let scalar_protocol_failures witness_id residual =
+  list_field "linked_stage2_input_derivation" residual
+  |> List.concat_map (fun entry ->
+       let export_name = string_field "export_name" entry in
+       scalar_protocol_failures_for_derivation Residual_to_oracle
+         ("linked_stage2_input_derivation:" ^ witness_id ^ ":" ^ export_name)
+         entry)
+
 let primary_linkage_comparison linked =
   let exports = semantic_exports linked in
   let env = linked_environment linked in
   let derivation = list_field "linked_stage2_input_derivation" linked in
   let base_failures =
-    []
+    scalar_protocol_failures "primary" linked
     |> fun fs -> if exports = [] then fail Return_value Residual_to_oracle "missing semantic exports" "semantic_exports" :: fs else fs
     |> fun fs -> if env = [] then fail Provider_binding Residual_to_oracle "missing linked environment" "linked_environment" :: fs else fs
     |> fun fs -> if derivation = [] then fail Call_effect Residual_to_oracle "missing linked stage2 derivation" "linked_stage2_input_derivation" :: fs else fs
@@ -337,16 +357,22 @@ let primary_linkage_comparison linked =
               | None -> fail Call_effect Residual_to_oracle "missing importer dynamic extern-call result" "linked_output.final_output_table" :: fs
             in
             let fs = if not (primary_phase_ordered linked ~provider_module ~importer_module ~export_name) then fail Phase_ordering Residual_to_oracle "provider/export/environment/importer phases are not ordered" "phase_log" :: fs else fs in
-            if not (List.exists (fun derivation_entry ->
-              string_field "importer_module" derivation_entry = importer_module &&
-              string_field "importer_extern_root" derivation_entry = extern_root &&
-              string_field "provider_module" derivation_entry = provider_module &&
-              string_field "export_name" derivation_entry = export_name &&
-              string_field "derivation_source" derivation_entry = "provider-stage2-output" &&
-              string_field "effect_reason" derivation_entry = "linked-provider-return" &&
-              int_field "linked_return_value" derivation_entry = linked_value)
-              derivation)
-            then fail Call_effect Residual_to_oracle "missing linked-provider-return derivation entry" "linked_stage2_input_derivation" :: fs else fs
+            let matching_derivation =
+              derivation
+              |> List.find_opt (fun derivation_entry ->
+                   string_field "importer_module" derivation_entry = importer_module &&
+                   string_field "importer_extern_root" derivation_entry = extern_root &&
+                   string_field "provider_module" derivation_entry = provider_module &&
+                   string_field "export_name" derivation_entry = export_name &&
+                   string_field "derivation_source" derivation_entry = "provider-stage2-output" &&
+                   string_field "effect_reason" derivation_entry = "linked-provider-return" &&
+                   int_field "linked_return_value" derivation_entry = linked_value)
+            in
+            match matching_derivation with
+            | None -> fail Call_effect Residual_to_oracle "missing linked-provider-return derivation entry" "linked_stage2_input_derivation" :: fs
+            | Some derivation_entry ->
+                scalar_protocol_failures_for_derivation Residual_to_oracle
+                  "linked_stage2_input_derivation" derivation_entry @ fs
       in
       let obs_entry = `Assoc [
         "category", `String "call-effect";
@@ -662,6 +688,7 @@ let failure_taxonomy_json =
     `String "missing_from_origin";
     `String "value_mismatch";
     `String "typed_metadata_mismatch";
+    `String "typed_scalar_protocol_mismatch";
     `String "provenance_missing";
     `String "unclassified_universe_fact";
   ]
@@ -838,6 +865,10 @@ let linked_call_effect_facts witness_id residual =
       "symbol", `String export_name;
       "value", `String (string_field "effect_reason" entry ^ ":" ^ string_of_int (int_field "linked_return_value" entry));
       "canonical_value", `Assoc ["kind", `String "call-effect"; "raw", `String (string_field "effect_reason" entry)];
+      "scalar_protocol_schema", member "scalar_protocol_schema" entry;
+      "scalar_call_protocol_id", member "scalar_call_protocol_id" entry;
+      "typed_scalar_metadata_valid", `Bool (ScalarCall.validation_ok (ScalarCall.validate_linked_derivation_json entry));
+      "typed_scalar_linked_derivation", member "typed_scalar_linked_derivation" entry;
       "provenance", `String ("linked_stage2_input_derivation:" ^ witness_id ^ ":" ^ export_name);
     ])
 
@@ -872,12 +903,21 @@ let completion_status_facts witness_id residual oracle =
 
 let full_itv_evidence_failures witness_id residual oracle =
   let oracle_completion = member "completion" (member "projection" oracle) in
-  []
+  let scalar_protocol_failures =
+    list_field "linked_stage2_input_derivation" residual
+    |> List.concat_map (fun entry ->
+         let export_name = string_field "export_name" entry in
+         scalar_protocol_failures_for_derivation Residual_to_oracle
+           ("linked_stage2_input_derivation:" ^ witness_id ^ ":" ^ export_name)
+           entry)
+  in
+  scalar_protocol_failures
   |> fun fs -> if linked_environment residual = [] then fail Provider_binding Residual_to_oracle "missing_from_residual" ("linked_environment:" ^ witness_id) :: fs else fs
   |> fun fs -> if list_field "linked_stage2_input_derivation" residual = [] then fail Call_effect Residual_to_oracle "missing_from_residual" ("linked_stage2_input_derivation:" ^ witness_id) :: fs else fs
   |> fun fs -> if list_field "phase_log" residual = [] then fail Phase_ordering Residual_to_oracle "missing_from_residual" ("phase_log:" ^ witness_id) :: fs else fs
   |> fun fs -> if not (bool_field "linked_residual_analyzer_ran" residual) then fail Call_effect Residual_to_oracle "unclassified_universe_fact" ("linked_residual_analyzer_ran:" ^ witness_id) :: fs else fs
   |> fun fs -> if not (bool_field "worklist_drained" oracle_completion) then fail Call_effect Oracle_to_residual "unclassified_universe_fact" ("projection.completion:" ^ witness_id) :: fs else fs
+  |> fun fs -> scalar_protocol_failures @ fs
 
 let manifest_entry ~classification fact =
   `Assoc [
@@ -889,6 +929,9 @@ let manifest_entry ~classification fact =
     "value", member "value" fact;
     "canonical_value", member "canonical_value" fact;
     "typed_cell_metadata", member "typed_cell_metadata" fact;
+    "scalar_protocol_schema", member "scalar_protocol_schema" fact;
+    "scalar_call_protocol_id", member "scalar_call_protocol_id" fact;
+    "typed_scalar_metadata_valid", member "typed_scalar_metadata_valid" fact;
     "provenance", member "provenance" fact;
   ]
 

@@ -7,6 +7,7 @@ module Stage2 = Abstract_speculate_stage2_input
 module MetaSparse = Abstract_speculate_meta_sparse
 module Residual = Abstract_speculate_residual_value
 module Solver = Abstract_speculate_residual_solver
+module ScalarCall = Abstract_speculate_residual_scalar_call
 
 let schema_version = "abstract-speculate-residual-linking-pe/v1"
 
@@ -502,24 +503,28 @@ let make_external_summary
       "provider_row", provider_row;
     ]
   in
-  let return_effect =
-    typed_effect
-      ~domain:"return"
-      ~effect_id:(effect_id
-        ~provider_module
-        ~export_name
-        ~domain:"return"
-        ~location:return_location)
-      ~symbol:export_name
-      ~location:return_location
-      ~value_json:(`Int return_value)
-      ~provider_module
-      ~provider_source_hash
-      ~provider_artifact_path
-      ~provider_phase_index
-      ~derivation_source:"provider-stage2-output"
-      ~source_evidence_path:"provider_row.return"
+  let return_effect_id =
+    ScalarCall.provider_return_effect_id ~provider_module ~export_name ~return_location
   in
+  let scalar_return =
+    match
+      ScalarCall.make_provider_return
+        ~provider_module
+        ~provider_source_hash
+        ~provider_artifact_path
+        ~export_name
+        ~return_node
+        ~return_location
+        ~effect_id:return_effect_id
+        ~provider_phase_index
+        ~return_value
+        ~abstract_return_value
+        ~provider_row
+    with
+    | Ok scalar_return -> scalar_return
+    | Error reason -> failwith ("invalid scalar return protocol for " ^ export_name ^ ": " ^ reason)
+  in
+  let return_effect = ScalarCall.return_effect_json scalar_return in
   let memory_effects =
     provider_row
     |> row_memory
@@ -555,19 +560,8 @@ let make_external_summary
   in
   let v1_compat =
     {
-      extern_scalar_value = `Assoc [
-        "name", `String export_name;
-        "value", `Int return_value;
-        "abstract_value", `String abstract_return_value;
-        "source", `String "function-return-singleton";
-      ];
-      function_return_summary = `Assoc [
-        "function", `String export_name;
-        "return_node", `String return_node;
-        "return_location", `String return_location;
-        "return_value", `Int return_value;
-        "abstract_return_value", `String abstract_return_value;
-      ];
+      extern_scalar_value = ScalarCall.v1_extern_scalar_value_json scalar_return;
+      function_return_summary = ScalarCall.function_return_summary_json scalar_return;
       global_write_summary_placeholder = `Assoc [
         "status", `String "compat-v1-non-authoritative";
         "writes", `List [];
@@ -721,6 +715,25 @@ let return_effect_id summary =
   | Some id -> id
   | None -> failwith "ExternalSummary v2 return effect missing effect_id"
 
+let scalar_return_of_semantic_export export =
+  let effect_id = return_effect_id export.external_summary in
+  match
+    ScalarCall.make_provider_return
+      ~provider_module:export.provider_module
+      ~provider_source_hash:export.provider_source_hash
+      ~provider_artifact_path:export.provider_artifact_path
+      ~export_name:export.export_name
+      ~return_node:export.return_node
+      ~return_location:export.return_location
+      ~effect_id
+      ~provider_phase_index:export.provider_phase_index
+      ~return_value:export.return_value
+      ~abstract_return_value:export.abstract_return_value
+      ~provider_row:export.provider_row
+  with
+  | Ok scalar_return -> scalar_return
+  | Error reason -> failwith ("invalid scalar return protocol for " ^ export.export_name ^ ": " ^ reason)
+
 let linked_stage2_input_for_importer importer linked_environment =
   let entries =
     linked_environment
@@ -731,22 +744,41 @@ let linked_stage2_input_for_importer importer linked_environment =
     |> List.map (fun entry ->
          entry.importer_extern_root,
          (entry.linked_return_value,
-          `Assoc [
-            "provider_module", `String entry.provider_module;
-            "provider_source_hash", `String entry.semantic_export.provider_source_hash;
-            "provider_artifact_path", `String entry.semantic_export.provider_artifact_path;
-            "export_name", `String entry.export_name;
-            "return_location", `String entry.semantic_export.return_location;
-            "return_node", `String entry.semantic_export.return_node;
-            "abstract_return_value", `String entry.semantic_export.abstract_return_value;
-            "provider_phase_index", `Int entry.semantic_export.provider_phase_index;
-            "derivation_source", `String "provider-stage2-output";
-            "external_summary_schema", `String "abstract-speculate-external-summary/v2";
-            "summary_api_status", `String "prototype-internal";
-            "external_summary_effect_id", `String (return_effect_id entry.semantic_export.external_summary);
-            "return_effect", primary_return_effect entry.semantic_export.external_summary;
-            "external_summary", external_summary_to_json entry.semantic_export.external_summary;
-          ]))
+          let scalar_return = scalar_return_of_semantic_export entry.semantic_export in
+          let linked_derivation =
+            match
+              ScalarCall.make_linked_derivation
+                ~importer_module:entry.importer_module
+                ~importer_extern_root:entry.importer_extern_root
+                ~import_name:entry.import_name
+                ~linked_return_value:entry.linked_return_value
+                ~provider_return:scalar_return
+            with
+            | Ok linked_derivation -> linked_derivation
+            | Error reason -> failwith ("invalid linked scalar derivation for " ^ entry.export_name ^ ": " ^ reason)
+          in
+          ScalarCall.add_fields
+            [
+              "provider_module", `String entry.provider_module;
+              "provider_source_hash", `String entry.semantic_export.provider_source_hash;
+              "provider_artifact_path", `String entry.semantic_export.provider_artifact_path;
+              "export_name", `String entry.export_name;
+              "return_location", `String entry.semantic_export.return_location;
+              "return_node", `String entry.semantic_export.return_node;
+              "abstract_return_value", `String entry.semantic_export.abstract_return_value;
+              "provider_phase_index", `Int entry.semantic_export.provider_phase_index;
+              "derivation_source", `String "provider-stage2-output";
+              "external_summary_schema", `String "abstract-speculate-external-summary/v2";
+              "summary_api_status", `String "prototype-internal";
+              "external_summary_effect_id", `String (return_effect_id entry.semantic_export.external_summary);
+              "return_effect", primary_return_effect entry.semantic_export.external_summary;
+              "external_summary", external_summary_to_json entry.semantic_export.external_summary;
+              "scalar_protocol_schema", `String ScalarCall.schema_id;
+              "scalar_call_protocol_id", `String (ScalarCall.scalar_protocol_id scalar_return);
+              "typed_scalar_metadata_valid", `Bool true;
+              "typed_scalar_linked_derivation", ScalarCall.linked_derivation_metadata_json linked_derivation;
+            ]
+            (`Assoc [])))
   in
   {
     StageT.extern_effects =
@@ -760,23 +792,48 @@ let linked_stage2_input_for_importer importer linked_environment =
 let linked_input_derivation_json linked_environment =
   linked_environment
   |> List.map (fun entry ->
-       `Assoc [
-         "importer_module", `String entry.importer_module;
-         "importer_extern_root", `String entry.importer_extern_root;
-         "import_name", `String entry.import_name;
-         "provider_module", `String entry.provider_module;
-         "export_name", `String entry.export_name;
-         "linked_return_value", `Int entry.linked_return_value;
-         "effect_reason", `String "linked-provider-return";
-         "stage2_obligation", `String "dynamic external/link fact derived from provider stage2 output";
-         "derivation_source", `String "provider-stage2-output";
-         "external_summary_schema", `String "abstract-speculate-external-summary/v2";
-         "summary_api_status", `String "prototype-internal";
-         "external_summary_effect_id", `String (return_effect_id entry.semantic_export.external_summary);
-         "return_effect", primary_return_effect entry.semantic_export.external_summary;
-         "semantic_export", semantic_export_to_json entry.semantic_export;
-         "external_summary", external_summary_to_json entry.semantic_export.external_summary;
-       ])
+       let scalar_return = scalar_return_of_semantic_export entry.semantic_export in
+       let linked_derivation =
+         match
+           ScalarCall.make_linked_derivation
+             ~importer_module:entry.importer_module
+             ~importer_extern_root:entry.importer_extern_root
+             ~import_name:entry.import_name
+             ~linked_return_value:entry.linked_return_value
+             ~provider_return:scalar_return
+         with
+         | Ok linked_derivation -> linked_derivation
+         | Error reason -> failwith ("invalid linked scalar derivation for " ^ entry.export_name ^ ": " ^ reason)
+       in
+       ScalarCall.add_fields
+         [
+           "importer_module", `String entry.importer_module;
+           "importer_extern_root", `String entry.importer_extern_root;
+           "import_name", `String entry.import_name;
+           "provider_module", `String entry.provider_module;
+           "provider_source_hash", `String entry.semantic_export.provider_source_hash;
+           "provider_artifact_path", `String entry.semantic_export.provider_artifact_path;
+           "export_name", `String entry.export_name;
+           "return_location", `String entry.semantic_export.return_location;
+           "return_node", `String entry.semantic_export.return_node;
+           "abstract_return_value", `String entry.semantic_export.abstract_return_value;
+           "provider_phase_index", `Int entry.semantic_export.provider_phase_index;
+           "linked_return_value", `Int entry.linked_return_value;
+           "effect_reason", `String "linked-provider-return";
+           "stage2_obligation", `String "dynamic external/link fact derived from provider stage2 output";
+           "derivation_source", `String "provider-stage2-output";
+           "external_summary_schema", `String "abstract-speculate-external-summary/v2";
+           "summary_api_status", `String "prototype-internal";
+           "external_summary_effect_id", `String (return_effect_id entry.semantic_export.external_summary);
+           "return_effect", primary_return_effect entry.semantic_export.external_summary;
+           "semantic_export", semantic_export_to_json entry.semantic_export;
+           "external_summary", external_summary_to_json entry.semantic_export.external_summary;
+           "scalar_protocol_schema", `String ScalarCall.schema_id;
+           "scalar_call_protocol_id", `String (ScalarCall.scalar_protocol_id scalar_return);
+           "typed_scalar_metadata_valid", `Bool true;
+           "typed_scalar_linked_derivation", ScalarCall.linked_derivation_metadata_json linked_derivation;
+         ]
+         (`Assoc []))
 
 let shared_scc_cell ~kind ~module_id ~symbol ~location =
   StageT.make_residual_cell_id

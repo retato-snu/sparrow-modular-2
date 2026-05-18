@@ -7,6 +7,7 @@ let usage =
 
 let member = Yojson.Safe.Util.member
 module Relation = Sparrow_modular_ocaml.Abstract_speculate_residual_relation
+module ScalarCall = Sparrow_modular_ocaml.Abstract_speculate_residual_scalar_call
 
 let expect cond msg = if not cond then failwith msg
 
@@ -17,6 +18,7 @@ let assoc_field name = function
 let string_field name json = match assoc_field name json with Some (`String s) -> s | _ -> ""
 let int_field name json = match assoc_field name json with Some (`Int n) -> n | _ -> min_int
 let bool_field name json = match assoc_field name json with Some (`Bool b) -> b | _ -> false
+let bool_true_field name json = match assoc_field name json with Some (`Bool true) -> true | _ -> false
 let list_field name json = match assoc_field name json with Some (`List xs) -> xs | _ -> []
 
 let has_field name json = match assoc_field name json with Some `Null | None -> false | Some _ -> true
@@ -68,6 +70,17 @@ let expected_effect_id domain eff =
   domain ^ ":" ^
   string_field "location" eff
 
+let scalar_protocol_summary_ok summary eff =
+  let extern_scalar = summary |> member "external_summary_v1_compat" |> member "extern_scalar_value" in
+  ScalarCall.validation_ok (ScalarCall.validate_return_effect_json eff) &&
+  ScalarCall.validation_ok (ScalarCall.validate_v1_extern_scalar_value_json extern_scalar) &&
+  string_field "scalar_protocol_schema" eff = ScalarCall.schema_id &&
+  string_field "scalar_protocol_schema" extern_scalar = ScalarCall.schema_id &&
+  string_field "scalar_call_protocol_id" eff <> "" &&
+  string_field "scalar_call_protocol_id" eff = string_field "scalar_call_protocol_id" extern_scalar &&
+  bool_true_field "typed_scalar_metadata_valid" eff &&
+  bool_true_field "typed_scalar_metadata_valid" extern_scalar
+
 let typed_effect_ok expected_domain eff =
   string_field "domain" eff = expected_domain &&
   string_field "effect_id" eff <> "" &&
@@ -77,14 +90,31 @@ let typed_effect_ok expected_domain eff =
   string_field "derivation_source" eff = "provider-stage2-output" &&
   string_field "witness_scope" eff = "selected-sparrow-itv"
 
+let scalar_return_metadata_ok summary eff =
+  let extern_scalar = summary |> member "external_summary_v1_compat" |> member "extern_scalar_value" in
+  string_field "scalar_protocol_schema" eff = ScalarCall.schema_id &&
+  string_field "scalar_protocol_schema" extern_scalar = ScalarCall.schema_id &&
+  string_field "scalar_call_protocol_id" eff <> "" &&
+  string_field "scalar_call_protocol_id" eff = string_field "scalar_call_protocol_id" extern_scalar &&
+  string_field "scalar_value_kind" eff <> "" &&
+  member "scalar_value" eff <> `Null &&
+  bool_true_field "typed_scalar_metadata_valid" eff &&
+  bool_true_field "typed_scalar_metadata_valid" extern_scalar
+
 let return_effect_ok summary eff =
   let function_return = summary |> member "external_summary_v1_compat" |> member "function_return_summary" in
   typed_effect_ok "return" eff &&
+  ScalarCall.validation_ok (ScalarCall.validate_return_effect_json eff) &&
+  ScalarCall.validation_ok
+    (ScalarCall.validate_v1_extern_scalar_value_json
+       (summary |> member "external_summary_v1_compat" |> member "extern_scalar_value")) &&
   effect_matches_summary_provenance summary eff &&
+  scalar_protocol_summary_ok summary eff &&
   string_field "source_evidence_path" eff = "provider_row.return" &&
   string_field "location" eff = string_field "return_location" function_return &&
   member "value" eff = member "return_value" function_return &&
-  string_field "effect_id" eff = expected_effect_id "return" eff
+  string_field "effect_id" eff = expected_effect_id "return" eff &&
+  scalar_return_metadata_ok summary eff
 
 let memory_effect_ok summary expected_domain eff =
   let source_prefix = "provider_row.memory:" in
@@ -602,6 +632,28 @@ let negative_cases witnesses =
             (mutate_first_effect "return_effects" ["value"] (`Int 999) residual))
     | [] -> false
   in
+  let typed_scalar_metadata_false =
+    match loaded with
+    | (_id, _category, residual, _oracle, _witness) :: _ ->
+        fails (fun () ->
+          require_external_summaries "typed_scalar_metadata_false"
+            (mutate_first_effect "return_effects" ["typed_scalar_metadata"; "provider_source_hash"] (`String "wrong-hash") residual))
+    | [] -> false
+  in
+  let typed_scalar_relation_false =
+    match loaded with
+    | (id, _category, residual, oracle, _witness) :: _ ->
+        let mutated =
+          match list_field "linked_stage2_input_derivation" residual with
+          | first :: rest ->
+              set_path ["linked_stage2_input_derivation"]
+                (`List (set_path ["scalar_call_protocol_id"] (`String "wrong-protocol-id") first :: rest))
+                residual
+          | [] -> residual
+        in
+        full_itv_relation_fails id mutated oracle
+    | [] -> false
+  in
   let global_false =
     match find "global_write_read" with
     | Some (id, category, residual, oracle, _) ->
@@ -833,6 +885,8 @@ let negative_cases witnesses =
     false_case "external_summary_schema_downgrade_rejected" v2_schema_false;
     false_case "external_summary_status_corruption_rejected" v2_status_false;
     false_case "external_summary_return_value_corruption_rejected" v2_return_value_false;
+    false_case "typed_scalar_metadata_corruption_rejected" typed_scalar_metadata_false;
+    false_case "typed_scalar_relation_protocol_id_corruption_rejected" typed_scalar_relation_false;
     false_case "missing_global_write_read_effect" global_false;
     false_case "missing_external_summary_v2_global_effect" v2_global_effect_false;
     false_case "external_summary_v2_global_location_corruption_rejected" v2_global_effect_location_false;

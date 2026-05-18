@@ -7,6 +7,7 @@ let usage =
 
 let member = Yojson.Safe.Util.member
 module Relation = Sparrow_modular_ocaml.Abstract_speculate_residual_relation
+module ScalarCall = Sparrow_modular_ocaml.Abstract_speculate_residual_scalar_call
 let to_string = Yojson.Safe.Util.to_string
 
 let expect cond msg = if not cond then failwith msg
@@ -90,6 +91,17 @@ let expected_effect_id domain eff =
   domain ^ ":" ^
   string_field "location" eff
 
+let scalar_protocol_summary_ok summary eff =
+  let extern_scalar = summary |> member "external_summary_v1_compat" |> member "extern_scalar_value" in
+  ScalarCall.validation_ok (ScalarCall.validate_return_effect_json eff) &&
+  ScalarCall.validation_ok (ScalarCall.validate_v1_extern_scalar_value_json extern_scalar) &&
+  string_field "scalar_protocol_schema" eff = ScalarCall.schema_id &&
+  string_field "scalar_protocol_schema" extern_scalar = ScalarCall.schema_id &&
+  string_field "scalar_call_protocol_id" eff <> "" &&
+  string_field "scalar_call_protocol_id" eff = string_field "scalar_call_protocol_id" extern_scalar &&
+  bool_true_field "typed_scalar_metadata_valid" eff &&
+  bool_true_field "typed_scalar_metadata_valid" extern_scalar
+
 let typed_effect_ok expected_domain eff =
   string_field "domain" eff = expected_domain &&
   string_field "effect_id" eff <> "" &&
@@ -99,14 +111,31 @@ let typed_effect_ok expected_domain eff =
   string_field "derivation_source" eff = "provider-stage2-output" &&
   string_field "witness_scope" eff = "selected-sparrow-itv"
 
+let scalar_return_metadata_ok summary eff =
+  let extern_scalar = summary |> member "external_summary_v1_compat" |> member "extern_scalar_value" in
+  string_field "scalar_protocol_schema" eff = ScalarCall.schema_id &&
+  string_field "scalar_protocol_schema" extern_scalar = ScalarCall.schema_id &&
+  string_field "scalar_call_protocol_id" eff <> "" &&
+  string_field "scalar_call_protocol_id" eff = string_field "scalar_call_protocol_id" extern_scalar &&
+  string_field "scalar_value_kind" eff <> "" &&
+  member "scalar_value" eff <> `Null &&
+  bool_true_field "typed_scalar_metadata_valid" eff &&
+  bool_true_field "typed_scalar_metadata_valid" extern_scalar
+
 let return_effect_ok summary eff =
   let function_return = summary |> member "external_summary_v1_compat" |> member "function_return_summary" in
   typed_effect_ok "return" eff &&
+  ScalarCall.validation_ok (ScalarCall.validate_return_effect_json eff) &&
+  ScalarCall.validation_ok
+    (ScalarCall.validate_v1_extern_scalar_value_json
+       (summary |> member "external_summary_v1_compat" |> member "extern_scalar_value")) &&
   effect_matches_summary_provenance summary eff &&
+  scalar_protocol_summary_ok summary eff &&
   string_field "source_evidence_path" eff = "provider_row.return" &&
   string_field "location" eff = string_field "return_location" function_return &&
   member "value" eff = member "return_value" function_return &&
-  string_field "effect_id" eff = expected_effect_id "return" eff
+  string_field "effect_id" eff = expected_effect_id "return" eff &&
+  scalar_return_metadata_ok summary eff
 
 let first_return_effect summary =
   match list_field "return_effects" summary with
@@ -131,12 +160,14 @@ let derivation_uses_v2_return_effect derivation =
   let summary = member "external_summary" derivation in
   let eff = first_return_effect summary in
   external_summary_ok summary &&
+  ScalarCall.validation_ok (ScalarCall.validate_linked_derivation_json derivation) &&
   string_field "external_summary_schema" derivation = "abstract-speculate-external-summary/v2" &&
   string_field "summary_api_status" derivation = "prototype-internal" &&
   string_field "external_summary_effect_id" derivation = string_field "effect_id" eff &&
   member "return_effect" derivation = eff &&
   member "value" eff = member "linked_return_value" derivation &&
-  string_field "provider_module" eff = string_field "provider_module" derivation
+  string_field "provider_module" eff = string_field "provider_module" derivation &&
+  ScalarCall.validation_ok (ScalarCall.validate_linked_derivation_json derivation)
 
 let require_external_summaries linked =
   let summaries = list_field "external_summaries" linked in
@@ -372,11 +403,23 @@ let run_false_case_checks manifest linked =
     mutate_first_return_effect ["location"] (`String "(wrong,__return__)") json);
   v2_false_case "return effect provenance corrupted" (fun json ->
     mutate_first_return_effect ["provider_source_hash"] (`String "wrong-hash") json);
+  v2_false_case "return effect scalar metadata corrupted" (fun json ->
+    mutate_first_return_effect ["typed_scalar_metadata_valid"] (`Bool false) json);
+  v2_false_case "return effect scalar value corrupted" (fun json ->
+    mutate_first_return_effect ["scalar_value"] (`Assoc ["kind", `String "singleton"; "lo", `Int 999; "hi", `Int 999]) json);
   v2_false_case "derivation effect id mismatch" (fun json ->
     match list_field "linked_stage2_input_derivation" json with
     | first :: rest ->
         set_path ["linked_stage2_input_derivation"]
           (`List (set_path ["external_summary_effect_id"] (`String "wrong-effect-id") first :: rest)) json
+    | [] -> json);
+  v2_false_case "return effect scalar metadata corrupted" (fun json ->
+    mutate_first_return_effect ["typed_scalar_metadata"; "provider_source_hash"] (`String "wrong-hash") json);
+  v2_false_case "linked scalar protocol id corrupted" (fun json ->
+    match list_field "linked_stage2_input_derivation" json with
+    | first :: rest ->
+        set_path ["linked_stage2_input_derivation"]
+          (`List (set_path ["scalar_call_protocol_id"] (`String "wrong-protocol-id") first :: rest)) json
     | [] -> json);
   false_case "linked_execute_returned" manifest linked (fun json ->
     set_path ["linked_output"; "execution_log"; "linked_residual_analyzer_evidence"; "linked_execute_returned"] (`Bool false) json);
@@ -589,6 +632,8 @@ let () =
 	      `String "external_summary_return_effect_location_corruption";
 	      `String "external_summary_return_effect_provenance_corruption";
 	      `String "linked_derivation_effect_id_mismatch";
+	      `String "typed_scalar_metadata_corruption";
+	      `String "linked_scalar_protocol_id_corruption";
 	      `String "manual_extern_value";
       `String "provider_importer_value_match";
       `String "provider_before_importer_order";
