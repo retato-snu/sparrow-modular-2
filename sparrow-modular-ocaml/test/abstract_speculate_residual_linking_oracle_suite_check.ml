@@ -16,6 +16,7 @@ let assoc_field name = function
 
 let string_field name json = match assoc_field name json with Some (`String s) -> s | _ -> ""
 let int_field name json = match assoc_field name json with Some (`Int n) -> n | _ -> min_int
+let bool_field name json = match assoc_field name json with Some (`Bool b) -> b | _ -> false
 let list_field name json = match assoc_field name json with Some (`List xs) -> xs | _ -> []
 
 let contains s sub =
@@ -183,6 +184,180 @@ let normalized_observations = Relation.return_observations
 let obligations_for witness_id category residual oracle =
   Relation.oracle_suite_obligations ~source_guard_obligation witness_id category residual oracle
 let observations_have_provenance = Relation.observations_have_provenance
+let last = function
+  | [] -> None
+  | xs -> Some (List.nth xs (List.length xs - 1))
+
+let cycle_topology_has_edge ~import_name ~export_name topology =
+  topology
+  |> List.exists (fun scc ->
+       list_field "edges" scc
+       |> List.exists (fun edge ->
+            string_field "import_name" edge = import_name &&
+            string_field "export_name" edge = export_name))
+
+let json_key json = Yojson.Safe.to_string json
+
+let sorted_json_list xs =
+  xs = List.sort (fun a b -> compare (json_key a) (json_key b)) xs
+
+let int_json_field name json =
+  match assoc_field name json with
+  | Some (`Int n) -> Some n
+  | Some (`String s) -> (try Some (int_of_string s) with Failure _ -> None)
+  | _ -> None
+
+let shared_final_cell_value residual cell_id =
+  list_field "shared_scc_final_cells" residual
+  |> List.find_map (fun cell ->
+       if string_field "shared_scc_cell_id" cell = cell_id then
+         int_json_field "value" cell
+       else None)
+
+let shared_scc_dependency_mentions residual needle =
+  list_field "shared_scc_dependencies" residual
+  |> List.exists (fun dep ->
+       contains (string_field "source" dep) needle || contains (string_field "target" dep) needle)
+
+let source_cell_matches_final residual value_json =
+  let cell_id = string_field "source_shared_scc_cell_id" value_json in
+  cell_id <> "" &&
+  match int_json_field "value" value_json, shared_final_cell_value residual cell_id with
+  | Some value, Some final_value -> value = final_value
+  | _ -> false
+
+let observable_value_matches_final residual obs =
+  string_field "observable_kind" obs = "imported-cyclic-sink-write" &&
+  string_field "observable_location" obs <> "" &&
+  source_cell_matches_final residual obs &&
+  bool_field "shared_scc_value_matches" obs
+
+let imported_cyclic_values_exact residual =
+  let values = list_field "imported_cyclic_observable_values" residual in
+  let expected_pair ~importer ~import_name ~provider ~export_name =
+    values
+    |> List.exists (fun value ->
+         string_field "importer_module" value = importer &&
+         string_field "import_name" value = import_name &&
+         string_field "provider_module" value = provider &&
+         string_field "export_name" value = export_name &&
+         bool_field "exact_singleton" value &&
+         bool_field "no_extra_imprecision" value &&
+         bool_field "shared_scc_value_matches" value &&
+         bool_field "observable_sink_dependency_present" value &&
+         source_cell_matches_final residual value &&
+         list_field "observable_values" value <> [] &&
+         List.for_all (observable_value_matches_final residual)
+           (list_field "observable_values" value))
+  in
+  values <> [] &&
+  bool_field "cyclic_imported_value_exact_singleton_parity" residual &&
+  bool_field "cycle_final_values_derive_from_shared_scc_final_cells" residual &&
+  expected_pair ~importer:"a.c" ~import_name:"cycle_b" ~provider:"b.c" ~export_name:"cycle_b" &&
+  expected_pair ~importer:"b.c" ~import_name:"cycle_a" ~provider:"a.c" ~export_name:"cycle_a"
+
+let shared_scc_export_values_exact residual =
+  let exports = list_field "linked_cycle_accepted_exports" residual in
+  exports <> [] &&
+  List.for_all (fun export ->
+    string_field "derivation_source" export = "shared_scc_final_cells" &&
+    bool_field "shared_scc_value_matches" export &&
+    source_cell_matches_final residual export)
+    exports
+
+let shared_scc_solver_evidence_passes residual =
+  bool_field "shared_scc_worklist_run" residual &&
+  int_field "shared_scc_state_read_count" residual > 0 &&
+  list_field "shared_scc_equation_ids" residual <> [] &&
+  list_field "shared_scc_cell_ids" residual <> [] &&
+  list_field "shared_scc_dependencies" residual <> [] &&
+  list_field "shared_scc_worklist_schedule" residual <> [] &&
+  list_field "shared_scc_final_cells" residual <> [] &&
+  sorted_json_list (list_field "shared_scc_equation_ids" residual) &&
+  sorted_json_list (list_field "shared_scc_cell_ids" residual) &&
+  sorted_json_list (list_field "shared_scc_dependencies" residual) &&
+  sorted_json_list (list_field "shared_scc_final_cells" residual) &&
+  shared_scc_dependency_mentions residual "export-return:b.c:cycle_b" &&
+  shared_scc_dependency_mentions residual "export-return:a.c:cycle_a" &&
+  shared_scc_dependency_mentions residual "import-observable:a.c:cycle_b" &&
+  shared_scc_dependency_mentions residual "import-observable:b.c:cycle_a" &&
+  imported_cyclic_values_exact residual &&
+  shared_scc_export_values_exact residual
+
+let recomputed_cycle_evidence_passes residual =
+  let topology = list_field "linked_cycle_topology" residual in
+  let rounds = list_field "linked_cycle_rounds" residual in
+  let cyclic_scc_count =
+    topology |> List.fold_left (fun acc scc -> if bool_field "is_cyclic" scc then acc + 1 else acc) 0
+  in
+  let changed_counts =
+    rounds |> List.map (fun round -> int_field "changed_binding_count" round)
+  in
+  let reported_changed_counts =
+    list_field "linked_cycle_changed_bindings" residual
+    |> List.map (function `Int n -> n | _ -> min_int)
+  in
+  let last_round_stable =
+    match last rounds with
+    | Some round ->
+        (not (bool_field "changed" round)) &&
+        int_field "changed_binding_count" round = 0 &&
+        list_field "linked_environment" round <> [] &&
+        List.for_all (fun binding ->
+          string_field "origin" binding = "shared-scc-final-cell" ||
+          string_field "origin" binding = "provider-derived")
+          (list_field "linked_environment" round)
+    | None -> false
+  in
+  bool_field "linked_cyclic_residual_solver_run" residual &&
+  bool_field "linked_cycle_worklist_drained" residual &&
+  bool_field "linked_cycle_obligations_closed" residual &&
+  bool_field "linked_cycle_stable_exports" residual &&
+  not (bool_field "linked_overlay_only" residual) &&
+  (list_field "linked_cycle_shared_scc_solvers" residual
+   |> List.for_all (fun solver ->
+        bool_field "shared_scc_authoritative_for_cycle_acceptance" solver &&
+        not (bool_field "linker_rerun_convergence_used_for_acceptance" solver) &&
+        string_field "final_linked_environment_source" solver = "shared_scc_final_cells")) &&
+  int_field "linked_cycle_scc_count" residual = cyclic_scc_count &&
+  cyclic_scc_count > 0 &&
+  int_field "linked_cycle_iteration_count" residual = max 0 (List.length rounds - 1) &&
+  int_field "linked_cycle_bootstrap_bindings_remaining" residual = 0 &&
+  topology <> [] &&
+  rounds <> [] &&
+  changed_counts = reported_changed_counts &&
+  cycle_topology_has_edge ~import_name:"cycle_b" ~export_name:"cycle_b" topology &&
+  cycle_topology_has_edge ~import_name:"cycle_a" ~export_name:"cycle_a" topology &&
+  last_round_stable &&
+  shared_scc_solver_evidence_passes residual
+
+let cycle_evidence_obligations witness_id residual =
+  if witness_id <> "cycle_topology" then []
+  else [
+    `Assoc [
+      "name", `String "cyclic_residual_fixpoint_evidence";
+      "category", `String "cycle-topology";
+      "witness_id", `String witness_id;
+      "status", `String (if recomputed_cycle_evidence_passes residual then "pass" else "fail");
+      "linked_cycle_scc_count", member "linked_cycle_scc_count" residual;
+      "linked_cycle_iteration_count", member "linked_cycle_iteration_count" residual;
+      "linked_cycle_bootstrap_bindings_remaining", member "linked_cycle_bootstrap_bindings_remaining" residual;
+      "evidence_source", `String "recomputed from linked_cycle_topology and linked_cycle_rounds";
+    ]
+    ;
+    `Assoc [
+      "name", `String "cyclic_imported_value_exact_singleton_parity";
+      "category", `String "cycle-value-parity";
+      "witness_id", `String witness_id;
+      "status", `String (if shared_scc_solver_evidence_passes residual then "pass" else "fail");
+      "shared_scc_worklist_run", member "shared_scc_worklist_run" residual;
+      "shared_scc_state_read_count", member "shared_scc_state_read_count" residual;
+      "imported_cyclic_observable_values", member "imported_cyclic_observable_values" residual;
+      "shared_scc_final_cells", member "shared_scc_final_cells" residual;
+      "evidence_source", `String "shared_scc_final_cells source_shared_scc_cell_id exact singleton cross-check";
+    ]
+  ]
+
 let obligation_passes = Relation.obligation_passes
 let witness_pass_status = Relation.witness_pass_status
 
@@ -205,7 +380,7 @@ let witness_report witness =
     (witness_id ^ ": oracle artifact identity mismatch");
   require_external_summaries witness_id residual;
   let summaries = list_field "external_summaries" residual in
-  let obligations = obligations_for witness_id category residual oracle in
+  let obligations = obligations_for witness_id category residual oracle @ cycle_evidence_obligations witness_id residual in
   let residual_obs, oracle_obs = normalized_observations witness_id residual oracle in
   let selected_relation = Relation.selected_observation_relation_json ~witness_id ~residual ~oracle in
   let full_itv_relation = Relation.full_itv_semantic_relation_json ~witness_id ~residual ~oracle in
@@ -523,6 +698,83 @@ let negative_cases witnesses =
         not (witness_pass_status obligations residual_obs_without_provenance oracle_obs)
     | [] -> false
   in
+  let cycle_evidence_fails mutation =
+    match find "cycle_topology" with
+    | Some (_id, _category, residual, _oracle, _) ->
+        not (recomputed_cycle_evidence_passes (mutation residual))
+    | None -> false
+  in
+  let mutate_first_imported_value path value residual =
+    match list_field "imported_cyclic_observable_values" residual with
+    | first :: rest ->
+        set_path ["imported_cyclic_observable_values"]
+          (`List (set_path path value first :: rest))
+          residual
+    | [] -> residual
+  in
+  let mutate_first_observable path value residual =
+    match list_field "imported_cyclic_observable_values" residual with
+    | first :: rest ->
+        begin match list_field "observable_values" first with
+        | obs :: obs_rest ->
+            let first = set_path ["observable_values"] (`List (set_path path value obs :: obs_rest)) first in
+            set_path ["imported_cyclic_observable_values"] (`List (first :: rest)) residual
+        | [] -> residual
+        end
+    | [] -> residual
+  in
+  let mutate_first_shared_final_cell path value residual =
+    match list_field "shared_scc_final_cells" residual with
+    | first :: rest ->
+        set_path ["shared_scc_final_cells"] (`List (set_path path value first :: rest)) residual
+    | [] -> residual
+  in
+  let mutate_first_accepted_export path value residual =
+    match list_field "linked_cycle_accepted_exports" residual with
+    | first :: rest ->
+        set_path ["linked_cycle_accepted_exports"] (`List (set_path path value first :: rest)) residual
+    | [] -> residual
+  in
+  let cycle_source_negative_rejected =
+    let path =
+      Filename.concat !artifact_dir
+        "negative/cycle_import_value_removed.out/abstract-speculate-residual-linking-pe.linked.json"
+    in
+    Sys.file_exists path &&
+    not (recomputed_cycle_evidence_passes (Yojson.Safe.from_file path))
+  in
+  let remove_reverse_cycle_edge residual =
+    match list_field "linked_cycle_topology" residual with
+    | first :: rest ->
+        let edges =
+          list_field "edges" first
+          |> List.filter (fun edge -> string_field "import_name" edge <> "cycle_a")
+        in
+        set_path ["linked_cycle_topology"] (`List (set_path ["edges"] (`List edges) first :: rest)) residual
+    | [] -> residual
+  in
+  let set_final_round_changed residual =
+    let rounds = list_field "linked_cycle_rounds" residual in
+    match List.rev rounds with
+    | last_round :: rev_prefix ->
+        let changed = last_round |> set_path ["changed"] (`Bool true) |> set_path ["changed_binding_count"] (`Int 1) in
+        set_path ["linked_cycle_rounds"] (`List (List.rev (changed :: rev_prefix))) residual
+    | [] -> residual
+  in
+  let set_final_round_bootstrap residual =
+    let rounds = list_field "linked_cycle_rounds" residual in
+    match List.rev rounds with
+    | last_round :: rev_prefix ->
+        let bindings = list_field "linked_environment" last_round in
+        let changed_bindings =
+          match bindings with
+          | first :: rest -> set_path ["origin"] (`String "bootstrap-unknown") first :: rest
+          | [] -> []
+        in
+        let changed = set_path ["linked_environment"] (`List changed_bindings) last_round in
+        set_path ["linked_cycle_rounds"] (`List (List.rev (changed :: rev_prefix))) residual
+    | [] -> residual
+  in
   let negative_dir = Filename.concat !artifact_dir "negative" in
   let injected_shortcut_rejected =
     let injected = Filename.concat negative_dir "injected_premerge_shortcut.ml" in
@@ -555,8 +807,40 @@ let negative_cases witnesses =
     false_case "missing_oracle_artifact" missing_oracle_false;
     false_case "witness_identity_mismatch" witness_identity_false;
     false_case "missing_normalized_observation_provenance" provenance_false;
-    false_case "mixed_role_dependency_cycle"
-      (log_contains (Filename.concat negative_dir "cycle_topology.log") "unsupported cyclic mixed importer/provider residual-linking topology");
+    false_case "cycle_missing_topology_rejected"
+      (cycle_evidence_fails (set_path ["linked_cycle_topology"] (`List [])));
+    false_case "cycle_scc_count_falsification_rejected"
+      (cycle_evidence_fails (set_path ["linked_cycle_scc_count"] (`Int 999)));
+    false_case "cycle_missing_reverse_edge_rejected"
+      (cycle_evidence_fails remove_reverse_cycle_edge);
+    false_case "cycle_empty_rounds_rejected"
+      (cycle_evidence_fails (set_path ["linked_cycle_rounds"] (`List [])));
+    false_case "cycle_non_stable_final_round_rejected"
+      (cycle_evidence_fails set_final_round_changed);
+    false_case "cycle_bootstrap_binding_remaining_rejected"
+      (cycle_evidence_fails (set_path ["linked_cycle_bootstrap_bindings_remaining"] (`Int 1)));
+    false_case "cycle_final_bootstrap_origin_rejected"
+      (cycle_evidence_fails set_final_round_bootstrap);
+    false_case "cycle_overlay_only_rejected"
+      (cycle_evidence_fails (set_path ["linked_overlay_only"] (`Bool true)));
+    false_case "cycle_source_import_value_removed_rejected"
+      cycle_source_negative_rejected;
+    false_case "cycle_missing_imported_observable_rejected"
+      (cycle_evidence_fails (set_path ["imported_cyclic_observable_values"] (`List [])));
+    false_case "cycle_imported_value_imprecision_rejected"
+      (cycle_evidence_fails (mutate_first_imported_value ["no_extra_imprecision"] (`Bool false)));
+    false_case "cycle_missing_shared_scc_dependency_rejected"
+      (cycle_evidence_fails (set_path ["shared_scc_dependencies"] (`List [])));
+    false_case "cycle_zero_shared_scc_state_reads_rejected"
+      (cycle_evidence_fails (set_path ["shared_scc_state_read_count"] (`Int 0)));
+    false_case "cycle_missing_shared_scc_worklist_schedule_rejected"
+      (cycle_evidence_fails (set_path ["shared_scc_worklist_schedule"] (`List [])));
+    false_case "cycle_shared_scc_final_cell_mismatch_rejected"
+      (cycle_evidence_fails (mutate_first_shared_final_cell ["value"] (`Int 999)));
+    false_case "cycle_observable_source_cell_mismatch_rejected"
+      (cycle_evidence_fails (mutate_first_observable ["source_shared_scc_cell_id"] (`String "missing-cell")));
+    false_case "cycle_bootstrap_derived_export_rejected"
+      (cycle_evidence_fails (mutate_first_accepted_export ["derivation_source"] (`String "provider-stage2-output")));
   ]
 
 let () =
@@ -574,7 +858,7 @@ let () =
   expect (string_field "oracle_reference_kind" manifest = "premerge-linked-observer")
     "suite manifest must mark premerge observer as oracle/reference";
   let witnesses = list_field "witnesses" manifest in
-  expect (List.length witnesses >= 4) "expected oracle suite witness coverage";
+  expect (List.length witnesses >= 5) "expected oracle suite witness coverage";
   let witness_reports = List.map witness_report witnesses in
   let all_obligations =
     witness_reports |> List.concat_map (fun w -> list_field "obligations" w)
@@ -587,6 +871,8 @@ let () =
     "provider_resolution_matches_oracle";
     "mixed_role_chain_matches_oracle";
     "no_premerge_implementation_shortcut";
+    "cyclic_residual_fixpoint_evidence";
+    "cyclic_imported_value_exact_singleton_parity";
   ] in
   let names = all_obligations |> List.map (string_field "name") in
   required |> List.iter (fun name -> expect (List.mem name names) ("missing obligation: " ^ name));

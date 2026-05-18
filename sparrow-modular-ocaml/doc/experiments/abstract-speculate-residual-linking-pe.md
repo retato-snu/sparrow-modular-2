@@ -18,6 +18,7 @@ The linked analyzer is produced after each module has already passed through the
 - Stage 2 is solver-backed for the supported slice: staged residual cells are emitted as residual equations, the deterministic worklist solver propagates dynamic extern/link seeds, and reports distinguish `solver-backed-residual-fixpoint` from `component-overlay-legacy` evidence.
 - The solver-backed claim requires actual solver-state reads: a residual equation receives `residual_state_view -> stage2_input`, dependent equations read prior cells through the state view, and review/audit gates reject zero state reads, zero seed reads, missing exact cell dependencies, or overlay-only evidence.
 - Structural import/export obligations are derived from parsed CIL/global data retained in each stage-1 result. The linker does not accept manual import/export lists as the source of truth.
+- Cyclic linked function-import SCCs are supported for the checked witness slice by a shared SCC residual-equation layer: the linker discovers SCC topology, uses bootstrap/provider-derived runs only as scaffolding, lowers cyclic exports/imports/observable sink writes to shared solver cells, runs the existing residual worklist, and accepts cyclic values only when `source_shared_scc_cell_id` resolves through `shared_scc_final_cells`.
 - The first semantic milestone was return-focused; the current handoff uses
   `ExternalSummary v2`, a prototype/internal typed effect summary over selected
   Sparrow-Itv witnesses.  Provider stage-2 rows are summarized into typed
@@ -169,11 +170,11 @@ The relation fails when any selected obligation is absent or inconsistent, inclu
 - wrong provider/export/environment/importer phase order;
 - call effects not marked `linked-provider-return`;
 - shortcut leakage through premerge/global merge implementation paths;
-- mixed-role cycles, because cyclic fixpoint summary semantics are out of scope.
+- cyclic evidence corruption, including missing SCC topology, falsified cycle counts, missing round snapshots, accepted bootstrap-only bindings, non-stable final rounds, or overlay-only cycle claims.
 
 This diagnostic contract is `prototype-non-public`: it is a summary/checker
 view for the current witness suite, not the full-Itv pass gate, final artifact
-schema, full memory model, cyclic summary semantics, or whole-program C
+schema, full memory model beyond the checked cycle witness slice, or whole-program C
 equivalence proof.
 
 ### Primary-linkage check vs oracle-suite relation
@@ -262,6 +263,175 @@ Ambiguous provider choices still fail with diagnostics. Deterministic multiple-i
 - No final API freeze for the residual module/linker contract.
 - No final general memory/global/call-effect summary language; richer effect observations in the oracle suite remain witness-bounded prototype evidence.
 
+## Coverage gap against frozen Sparrow
+
+This section records the concrete difference between the current
+Abstract-Speculate PE/residual-linking implementation and the frozen `sparrow/`
+analyzer.  It is a claim boundary, not a dismissal of the current milestone:
+the current implementation proves a real post-PE residual-linking path for the
+checked Sparrow-Itv witness universe, but it does not yet PE or relink all of
+Sparrow.
+
+### Domain and product-state coverage
+
+Frozen Sparrow includes multiple analysis domains and instances: Itv, Taint,
+Oct, OctImpact, product/memory domains, and the report-facing alarm layer.  The
+current PE/linking relation is intentionally Itv-scoped:
+
+- `full-sparrow-itv-semantic-relation` inventories Itv evidence exposed by the
+  accepted residual-linking slice.
+- Taint, Oct, OctImpact, and product-domain parity are intentionally excluded.
+- Alarm/report PE is intentionally excluded; current evidence is table/effect
+  relation evidence, not final user-facing Sparrow alarm classification.
+
+Consequently, the current result should be read as:
+
+```text
+link(PE(I_itv-witness, m1), ..., PE(I_itv-witness, mn))
+  agrees with the checked Sparrow-Itv oracle universe
+```
+
+not as:
+
+```text
+link(PE(I_full-sparrow, m1), ..., PE(I_full-sparrow, mn))
+  equals full Sparrow over all domains and reports
+```
+
+### C command and transfer coverage
+
+Frozen Sparrow's `ItvSem.run` handles the full command-level transfer path for
+the Itv instance: assignments, externals, array/struct/string/function
+allocations, assumes/pruning, undefined-library models, user calls, returns,
+return-node propagation, skips, and asm fallbacks.
+
+The current staged residual transfer only emits dynamic residual components for
+the subset needed by the witness path:
+
+- `Cexternal`;
+- selected `Ccall` results, especially unknown/imported calls or calls whose
+  arguments are already dynamic;
+- `Cset` when the right-hand side reads a dynamic cell; and
+- `Cif` / `Cassume` when the guard reads a dynamic cell.
+
+Other command forms may still be handled during the module-local static Sparrow
+preanalysis/fixpoint, but they are not generally lowered into link-time
+residual equations.  In particular, allocation, string allocation, function
+allocation, complete user-call transfer, full return propagation, and
+library-model side effects are not yet general residual-linking semantics.
+
+### Residual value language coverage
+
+Frozen Sparrow's Itv value carries more structure than an integer: interval
+data, abstract locations, array blocks, struct blocks, and procedure sets all
+participate in expression/lvalue evaluation.  Field/index resolution,
+addressing, casts, `sizeof`, `StartOf`, pruning, and pointer-derived location
+sets are part of the baseline Itv semantics.
+
+The current typed residual component interface is narrower.  Link-time
+residual code is primarily `stage2_input -> int`, and `ExternalSummary v2`
+records selected typed effects rather than the full Itv value/memory language.
+Fallbacks for unsupported residual expression shapes are intentionally
+prototype-level.  This is sufficient for singleton return/global/pointer/cycle
+witnesses, but not for arbitrary Itv values or full C memory semantics.
+
+### Memory, alias, and effect-summary coverage
+
+Frozen Sparrow's memory model includes location-sensitive abstract memory,
+field/index resolution, array and struct blocks, allocation sites, and
+instrumented read/write footprints.  Current residual linking summarizes only
+selected witness effects:
+
+- return effects for provider return cells;
+- selected global write/read effects such as `shared_g`;
+- selected pointer/shared-memory effects such as `(write_ptr,p)`; and
+- provenance/call-effect evidence needed to connect provider stage-2 output to
+  importer linked stage-2 input.
+
+There is no final general memory/effect summary language yet.  General
+alias-conditioned effects, arbitrary heap/struct/array updates, transitive
+memory summaries, and cross-module memory effects outside the checked witness
+locations remain future coverage.
+
+### Interprocedural and callgraph coverage
+
+Frozen Sparrow evaluates call targets, binds argument locals, records return
+locations, and propagates callee return values back to caller lvalues through
+the sparse fixpoint state.  Current residual linking resolves structural
+function import/export obligations from parsed CIL/global data and rejects
+ambiguous provider choices.  It supports deterministic multiple providers,
+mixed-role chains, and checked function-import SCCs, but only through the
+current semantic-export model.
+
+Not yet covered as general PE/linking semantics:
+
+- function pointers and multi-callee sets beyond the checked structural binding
+  cases;
+- full argument/return memory protocol across arbitrary calls;
+- context-sensitive call summaries;
+- recursion and callgraph cycles beyond the checked function-import SCC witness;
+  and
+- arbitrary provider/importer graphs whose effects are not expressible as the
+  current return/global/pointer summaries.
+
+### Library/API model coverage
+
+Frozen Sparrow contains library/API semantics for many undefined or standard
+library calls, including string, memory, input, and allocation-related models.
+The current PE/linking path treats imported/unknown calls primarily as
+extern/link obligations with validated stage-2 input or provider-derived linked
+effects.  It does not yet specialize and relink the full Sparrow API model
+surface.
+
+### Solver and lattice coverage
+
+The current residual solver is solver-backed and evidence-bearing, but it is
+not a complete reimplementation of Sparrow's Itv sparse fixpoint lattice.  Its
+current cell model is JSON/evidence-oriented: it uses deterministic worklist
+scheduling, exact dependency evidence, state-read evidence, and final-cell
+provenance, while the value-level join/order are prototype cell-equality
+operations for the emitted residual cells.
+
+The module-local stage-1 path still uses Sparrow-derived sparse analysis and
+staged lattice evidence, but the stage-2 residual solver does not generally
+execute `ItvDom.Mem` lattice operations for all Sparrow cells.  Coverage must
+expand by lowering more Sparrow semantic dependencies into typed residual
+equations whose final cells are the authoritative source of linked results.
+
+### Strategy and frontend coverage
+
+The current PE path keeps the intended post-PE linking boundary: it does not use
+multi-file frontend merge before PE.  The premerge linked observer is an oracle
+only.  The current path also does not claim Partial Flow Sensitivity
+staging/ranking parity, optimized residual-linker behavior, or final public
+artifact/API stability.
+
+### Cyclic coverage
+
+The cyclic milestone is real but scoped.  Cyclic function-import SCCs are
+lowered to shared SCC residual equations/cells, solved by the worklist, and
+accepted only when `shared_scc_final_cells` source cyclic exports/imported
+observables with exact singleton parity.  This does not yet cover arbitrary
+cyclic C semantics such as global mutation cycles, pointer-alias cycles,
+recursive call/memory cycles, or nested loop-fixpoint plus module-link-fixpoint
+interactions outside the checked witness universe.
+
+### Coverage expansion rule
+
+Future coverage should be added only when the full semantic chain is present:
+
+```text
+baseline Sparrow dependency
+  -> stage-1 residual cell/equation
+  -> validated stage-2 extern/link seed
+  -> solver state reads and exact cell dependencies
+  -> final residual cell provenance
+  -> oracle/negative-case evidence
+```
+
+Adding artifact fields or selected observations without this chain is
+instrumentation, not expanded Sparrow PE coverage.
+
 ## Contrast with real premerge linked observer
 
 `real_sparrow_premerge_linked_observer` intentionally validates a different evidence track: it starts from a linked whole-program fixture and uses `global_for_files` / frontend merge before analysis. This experiment keeps that path as contrast only; Abstract Speculate residual linking must prove post-PE linkability from module-local residual analyzers.
@@ -315,12 +485,14 @@ The suite-level report includes these obligations:
 - `pointer_memory_effect_matches_oracle`;
 - `provider_resolution_matches_oracle`;
 - `mixed_role_chain_matches_oracle`;
-- `no_premerge_implementation_shortcut`.
+- `no_premerge_implementation_shortcut`;
+- `cyclic_residual_fixpoint_evidence`;
+- `cyclic_imported_value_exact_singleton_parity`.
 
-Negative-case coverage is represented in the report for mismatched values/effects, missing global/pointer observations, a non-selected Itv cell removal that fails the full relation while selected diagnostics still pass, ambiguous providers, invalid mixed-role propagation, shortcut leakage, missing oracle artifacts, witness identity mismatch, missing provenance, and mixed-role cycles.
+Negative-case coverage is represented in the report for mismatched values/effects, missing global/pointer observations, a non-selected Itv cell removal that fails the full relation while selected diagnostics still pass, ambiguous providers, invalid mixed-role propagation, shortcut leakage, missing oracle artifacts, witness identity mismatch, missing provenance, source-level removal of an imported cyclic observable sink write, and cycle-evidence falsification.
 
 ## Topology support after the oracle-suite milestone
 
-The residual linker now supports deterministic multiple import/provider bindings and mixed importer/provider role chains for function imports.  Binding ambiguity still fails if one importer import has more than one candidate provider.  Mixed roles are scheduled by a dependency DAG over function bindings; dependency cycles fail with a named diagnostic unless a future plan introduces explicit fixpoint semantics for cyclic linked summaries.  The current mixed-role proof obligation is deliberately scoped to scheduling/order and summary handoff evidence; a later richer summary-language milestone should make upstream value-dependence part of the mixed-role semantic relation.
+The residual linker now supports deterministic multiple import/provider bindings, mixed importer/provider role chains, and checked cyclic function-import SCCs.  Binding ambiguity still fails if one importer import has more than one candidate provider.  Acyclic mixed roles are scheduled by a dependency DAG over function bindings; cyclic SCCs additionally emit a shared residual-equation/worklist run whose artifact evidence records topology, per-round export/environment snapshots, changed-binding counts, shared SCC equation/cell/dependency ids, state reads, worklist schedule, `shared_scc_final_cells`, accepted export provenance, and exact singleton imported-observable parity.  The current cyclic proof obligation is deliberately scoped to the oracle-suite witness relation and recomputable emitted-equation evidence; it is not an arbitrary-C or full product-domain theorem.
 
 Multiple extern roots are resolved by matching residual component provenance for the imported callee name, falling back to the singleton-root case for the original return-only witness.

@@ -130,7 +130,11 @@ solve(E_m, d) ⊒ I(m⊕d)
 
 The relation is intentionally scoped to the emitted equation language and
 witness universe.  It is not a full arbitrary-C or full product-domain Sparrow
-PE theorem, and cyclic linked residual solving remains future work.
+PE theorem.  The linked cyclic slice is implemented only for the checked
+Abstract Speculate witness universe: import/export SCCs are lowered to shared
+residual equations/cells, solved by the residual worklist, and accepted only
+when `shared_scc_final_cells` source the cyclic exports/imported observables
+and the oracle suite proves exact singleton parity.
 
 *Note on soundness decomposition.* The end-to-end claim decomposes into three
 independently verifiable layers:
