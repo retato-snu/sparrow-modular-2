@@ -148,4 +148,21 @@ let () =
   expect (not (bool_field "seed_input_read" y_execution)) "y equation read stage2 input directly";
   expect (not (bool_field "seed_input_read" ret_execution)) "ret equation read stage2 input directly";
   expect (schedule_has "changed-cell-dependent" solved.Solver.solver_log) "no dependent enqueue evidence";
+
+  expect (string_field "lattice_value_model" solved.Solver.solver_log = "typed-itv-residual-cell/v1") "solver log did not advertise typed ITV value model";
+  expect (string_field "lattice_join" solved.Solver.solver_log = "typed-itv-join/v1") "solver log did not advertise typed join";
+  expect (string_field "lattice_leq" solved.Solver.solver_log = "typed-itv-leq/v1") "solver log did not advertise typed leq";
+  expect (string_field "typed_lattice_adapter" solved.Solver.solver_log = "solver-row-target-cell/v1") "solver log did not advertise row adapter";
+
+  let join_equations = [
+    equation ~id:"x=1" ~target_node:"x" ~target_location:"x" ~dependencies:[]
+      ~uses_stage2_dynamic_input:false
+      ~eval:(fun _state _input -> 1);
+    equation ~id:"x=3" ~target_node:"x" ~target_location:"x" ~dependencies:[]
+      ~uses_stage2_dynamic_input:false
+      ~eval:(fun _state _input -> 3);
+  ] in
+  let joined = Solver.solve ~input ~static_rows:[] ~equations:join_equations in
+  expect (cell_value "x" joined.Solver.final_rows = Some "([1,3], typed-itv-residual-cell/v1)")
+    "solver did not use typed target-cell join instead of replace-with-new-evidence";
   print_endline "abstract_speculate_residual_solver_unit: PASS"

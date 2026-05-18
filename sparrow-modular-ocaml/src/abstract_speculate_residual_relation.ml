@@ -7,6 +7,8 @@
    checkers; it is not a stable public residual-linker API and it does not
    claim arbitrary-C semantic equivalence. *)
 
+module ItvCell = Abstract_speculate_itv_residual_cell
+
 type observation_domain =
   | Return_value
   | Global_value
@@ -659,6 +661,7 @@ let failure_taxonomy_json =
     `String "missing_from_residual";
     `String "missing_from_origin";
     `String "value_mismatch";
+    `String "typed_metadata_mismatch";
     `String "provenance_missing";
     `String "unclassified_universe_fact";
   ]
@@ -674,6 +677,8 @@ let canonicalization_json =
     "top", `String "([-oo,+oo], ...) is treated as Top and may cover finite origin Itv cells";
     "bottom_empty_unknown", `String "bot/empty/unknown values are retained as deterministic strings and compare by exact value";
     "location_sensitive_memory", `String "locations remain part of every semantic key";
+    "typed_value_model", `String ItvCell.value_model_id;
+    "typed_relation_adapter", `String ItvCell.relation_adapter_id;
   ]
 
 let full_itv_non_claims_json =
@@ -686,38 +691,38 @@ let full_itv_non_claims_json =
   ]
 
 let canonical_value_json value =
-  let trimmed = String.trim value in
-  match parse_interval_value trimmed with
-  | Some (lo, hi) when lo = hi ->
-      `Assoc ["kind", `String "singleton"; "lo", `Int lo; "hi", `Int hi; "raw", `String trimmed]
-  | Some (lo, hi) ->
-      `Assoc ["kind", `String "range"; "lo", `Int lo; "hi", `Int hi; "raw", `String trimmed]
-  | None when contains trimmed "[-oo, +oo]" || contains trimmed "[-oo,+oo]" ->
-      `Assoc ["kind", `String "top"; "raw", `String trimmed]
-  | None when trimmed = "" ->
-      `Assoc ["kind", `String "empty"; "raw", `String trimmed]
-  | None when contains trimmed "bot" ->
-      `Assoc ["kind", `String "symbolic-or-bottom"; "raw", `String trimmed]
-  | None ->
-      `Assoc ["kind", `String "opaque"; "raw", `String trimmed]
-
-let interval_bounds_for_coverage value =
-  let trimmed = String.trim value in
-  if contains trimmed "[-oo, +oo]" || contains trimmed "[-oo,+oo]" then Some None
-  else parse_interval_value trimmed |> Option.map (fun bounds -> Some bounds)
+  ItvCell.canonical_value_json_of_legacy_string value
 
 let value_covers residual_value origin_value =
-  residual_value = origin_value ||
-  match interval_bounds_for_coverage residual_value, interval_bounds_for_coverage origin_value with
-  | Some None, Some _ -> true
-  | Some (Some (rlo, rhi)), Some (Some (olo, ohi)) -> rlo <= olo && ohi <= rhi
+  ItvCell.covers_legacy_values ~residual:residual_value ~origin:origin_value
+
+let typed_metadata_matches cell metadata =
+  match metadata with
+  | `Null -> true
+  | `Assoc _ ->
+      let computed = ItvCell.metadata_json cell in
+      let expected_location = string_field "location" computed in
+      let expected_model = string_field "value_model" computed in
+      let location = string_field "location" metadata in
+      let model = string_field "value_model" metadata in
+      (location = "" || location = expected_location) &&
+      (model = "" || model = expected_model)
   | _ -> false
+
+let typed_metadata_for_cell ~table_name ~node cell =
+  match ItvCell.of_legacy_cell_json ~table:table_name ~node cell with
+  | Some typed_cell ->
+      let source_metadata = member "typed_cell_metadata" cell in
+      ItvCell.metadata_json typed_cell, typed_metadata_matches typed_cell source_metadata
+  | None ->
+      `Assoc ["value_model", `String ItvCell.value_model_id; "parse_status", `String "untyped-legacy-cell"], false
 
 let cell_fact ~side ~table_name ~row cell =
   let node = string_field "node" row in
   let module_id = string_field "linked_module_id" row in
   let location = string_field "location" cell in
   let value = string_field "value" cell in
+  let typed_metadata, typed_metadata_valid = typed_metadata_for_cell ~table_name ~node cell in
   `Assoc [
     "side", `String side;
     "category", `String "final-table-cell";
@@ -727,6 +732,9 @@ let cell_fact ~side ~table_name ~row cell =
     "location", `String location;
     "value", `String value;
     "canonical_value", canonical_value_json value;
+    "typed_cell_metadata", typed_metadata;
+    "typed_relation_adapter", `String ItvCell.relation_adapter_id;
+    "typed_input_metadata_valid", `Bool typed_metadata_valid;
     "provenance", `String (side ^ "." ^ table_name ^ ":" ^ node ^ ":" ^ location);
   ]
 
@@ -880,6 +888,7 @@ let manifest_entry ~classification fact =
     "location", member "location" fact;
     "value", member "value" fact;
     "canonical_value", member "canonical_value" fact;
+    "typed_cell_metadata", member "typed_cell_metadata" fact;
     "provenance", member "provenance" fact;
   ]
 
@@ -935,7 +944,16 @@ let full_itv_semantic_relation_json ~witness_id ~residual ~oracle =
   in
   let export_failures = semantic_export_failures witness_id residual oracle in
   let evidence_failures = full_itv_evidence_failures witness_id residual oracle in
-  let r2o_failures = residual_failures @ provenance_failures @ export_failures @ evidence_failures in
+  let typed_metadata_failures =
+    residual_table_facts @ oracle_table_facts
+    |> List.filter (fun fact -> not (bool_field "typed_input_metadata_valid" fact))
+    |> List.map (fun fact ->
+      let side = string_field "side" fact in
+      let direction = if side = "origin" then Oracle_to_residual else Residual_to_oracle in
+      fail Memory_location direction "typed_metadata_mismatch"
+        (side ^ "." ^ fact_table fact ^ ":" ^ fact_location fact))
+  in
+  let r2o_failures = residual_failures @ provenance_failures @ export_failures @ evidence_failures @ typed_metadata_failures in
   let o2r_failures = origin_failures in
   let r2o_pass = r2o_failures = [] in
   let o2r_pass = o2r_failures = [] in

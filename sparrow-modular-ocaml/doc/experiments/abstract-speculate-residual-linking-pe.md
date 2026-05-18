@@ -116,7 +116,8 @@ Each witness report emits `full_itv_semantic_relation` with:
   intentionally excluded, or expected-but-not-emitted;
 - `failure_taxonomy` with bounded reasons:
   `missing_from_residual`, `missing_from_origin`, `value_mismatch`,
-  `provenance_missing`, and `unclassified_universe_fact`;
+  `provenance_missing`, `typed_metadata_mismatch`, and
+  `unclassified_universe_fact`;
 - `canonicalization` for singleton intervals, finite ranges, Top, bottom/empty
   or unknown strings, and location-sensitive memory cells;
 - `residual_to_origin` and `origin_to_residual` bidirectional checks;
@@ -387,10 +388,17 @@ surface.
 
 The current residual solver is solver-backed and evidence-bearing, but it is
 not a complete reimplementation of Sparrow's Itv sparse fixpoint lattice.  Its
-current cell model is JSON/evidence-oriented: it uses deterministic worklist
-scheduling, exact dependency evidence, state-read evidence, and final-cell
-provenance, while the value-level join/order are prototype cell-equality
-operations for the emitted residual cells.
+residual final-table cells now pass through `Abstract_speculate_itv_residual_cell`,
+a shared typed ITV boundary used by both the solver row adapter and the full-ITV
+relation adapter.  The first-pass value set covers singleton integers, finite
+ranges, explicit Top syntax, exact non-numeric legacy values such as `bot` /
+`empty` / `unknown` / symbolic strings, and opaque exact-match strings.
+
+The solver preserves legacy JSON row/cell fields while advertising additive
+metadata (`typed-itv-residual-cell/v1`, `typed-itv-join/v1`, `typed-itv-leq/v1`)
+in its existing lattice log fields.  Its row adapter joins and orders the target
+cell through the typed module and preserves non-target row fields.  Conflicting
+opaque/non-numeric evidence is not promoted to Top by default.
 
 The module-local stage-1 path still uses Sparrow-derived sparse analysis and
 staged lattice evidence, but the stage-2 residual solver does not generally
@@ -474,7 +482,7 @@ The suite report is explicitly `prototype-non-public`.  Positive witnesses must 
 - row/effect provenance into both artifact families;
 - named obligations with pass/fail status.
 
-The relation statement is witness-bounded and full Sparrow-Itv scoped.  The checker allows documented Itv coverage normalization for interval-compatible final-table cells and records equality as not claimed when residual cells are over-approximations; it does not claim Oct, Taint, arbitrary-C, or whole-program semantic equivalence.
+The relation statement is witness-bounded and full Sparrow-Itv scoped.  The checker allows documented Itv coverage normalization for interval-compatible final-table cells through the shared typed residual-cell adapter and records equality as not claimed when residual cells are over-approximations.  Additive typed cell metadata is diagnostic/compatibility evidence: required relation fields remain unchanged, and mismatched typed cell metadata is rejected by the full-ITV relation.  The relation does not claim Oct, Taint, arbitrary-C, or whole-program semantic equivalence.
 
 ### Named obligations
 

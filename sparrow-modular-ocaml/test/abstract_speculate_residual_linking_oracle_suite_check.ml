@@ -19,6 +19,8 @@ let int_field name json = match assoc_field name json with Some (`Int n) -> n | 
 let bool_field name json = match assoc_field name json with Some (`Bool b) -> b | _ -> false
 let list_field name json = match assoc_field name json with Some (`List xs) -> xs | _ -> []
 
+let has_field name json = match assoc_field name json with Some `Null | None -> false | Some _ -> true
+
 let contains s sub =
   let len = String.length s and sub_len = String.length sub in
   let rec loop i = i + sub_len <= len && (String.sub s i sub_len = sub || loop (i + 1)) in
@@ -384,8 +386,20 @@ let witness_report witness =
   let residual_obs, oracle_obs = normalized_observations witness_id residual oracle in
   let selected_relation = Relation.selected_observation_relation_json ~witness_id ~residual ~oracle in
   let full_itv_relation = Relation.full_itv_semantic_relation_json ~witness_id ~residual ~oracle in
+  let required_full_itv_fields = [
+    "semantic_universe_manifest";
+    "failure_taxonomy";
+    "canonicalization";
+    "oracle_identity";
+    "residual_to_origin";
+    "origin_to_residual";
+  ] in
+  let required_full_itv_fields_present =
+    required_full_itv_fields |> List.for_all (fun field -> has_field field full_itv_relation)
+  in
   let pass = witness_pass_status obligations residual_obs oracle_obs &&
-             string_field "status" full_itv_relation = "pass" in
+             string_field "status" full_itv_relation = "pass" &&
+             required_full_itv_fields_present in
   `Assoc [
     "witness_id", `String witness_id;
     "category", `String category;
@@ -407,6 +421,8 @@ let witness_report witness =
     ];
     "full_itv_semantic_summary", member "summary" full_itv_relation;
     "full_itv_semantic_relation", full_itv_relation;
+    "full_itv_required_fields_present", `Bool required_full_itv_fields_present;
+    "full_itv_required_fields", `List (List.map (fun field -> `String field) required_full_itv_fields);
     "semantic_universe", member "semantic_universe" full_itv_relation;
     "semantic_universe_manifest", member "semantic_universe_manifest" full_itv_relation;
     "failure_taxonomy", member "failure_taxonomy" full_itv_relation;
@@ -458,6 +474,21 @@ let remove_linked_location location residual =
   residual
   |> set_path ["linked_output"; "final_input_table"] (`List (remove_location_from_rows location (list_field "final_input_table" output)))
   |> set_path ["linked_output"; "final_output_table"] (`List (remove_location_from_rows location (list_field "final_output_table" output)))
+
+let mutate_first_linked_cell_metadata residual metadata =
+  let output = member "linked_output" residual in
+  match list_field "final_output_table" output with
+  | `Assoc row_fields :: row_rest ->
+      begin match List.assoc_opt "memory" row_fields with
+      | Some (`List (cell :: cell_rest)) ->
+          let mutated_cell = set_path ["typed_cell_metadata"] metadata cell in
+          let mutated_row =
+            `Assoc (("memory", `List (mutated_cell :: cell_rest)) :: List.remove_assoc "memory" row_fields)
+          in
+          set_path ["linked_output"; "final_output_table"] (`List (mutated_row :: row_rest)) residual
+      | _ -> residual
+      end
+  | _ -> residual
 
 let obligation_set_fails witness_id category residual oracle =
   not (obligation_passes (obligations_for witness_id category residual oracle))
@@ -667,6 +698,19 @@ let negative_cases witnesses =
         selected_relation_passes id mutated oracle
     | None -> false
   in
+  let typed_cell_metadata_mismatch_false =
+    match find "global_write_read" with
+    | Some (id, _category, residual, oracle, _) ->
+        let mutated =
+          mutate_first_linked_cell_metadata residual
+            (`Assoc [
+              "value_model", `String "typed-itv-residual-cell/v1";
+              "location", `String "(wrong,location)";
+            ])
+        in
+        full_itv_relation_fails id mutated oracle
+    | None -> false
+  in
   let mixed_false =
     match find "mixed_role_chain" with
     | Some (id, category, residual, oracle, _) ->
@@ -800,6 +844,7 @@ let negative_cases witnesses =
     false_case "external_summary_v2_pointer_value_corruption_rejected" v2_pointer_effect_value_false;
     false_case "external_summary_v2_pointer_provenance_corruption_rejected" v2_pointer_effect_provenance_false;
     false_case "non_selected_itv_cell_mutation_fails_full_relation" non_selected_itv_cell_false;
+    false_case "typed_itv_cell_metadata_mismatch_fails_full_relation" typed_cell_metadata_mismatch_false;
     false_case "ambiguous_provider_accepted_incorrectly"
       (log_contains (Filename.concat negative_dir "ambiguous_provider.log") "unsupported ambiguous semantic export mapping");
     false_case "invalid_mixed_role_propagation" mixed_false;
@@ -882,6 +927,8 @@ let () =
     "at least one negative case was not covered";
   let suite_pass = witness_reports |> List.for_all (fun w -> string_field "status" w = "pass") in
   expect suite_pass "at least one full-Itv semantic relation failed";
+  expect (witness_reports |> List.for_all (fun w -> bool_field "full_itv_required_fields_present" w))
+    "at least one full-Itv relation omitted a required compatibility field";
   let report_json = `Assoc [
     "schema_version", `String "abstract-speculate-residual-linking-oracle-suite/v1";
     "schema_status", `String "prototype-non-public";

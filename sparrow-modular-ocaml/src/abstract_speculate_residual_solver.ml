@@ -3,6 +3,7 @@
 (***********************************************************************)
 
 module T = Abstract_speculate_stage_types
+module ItvCell = Abstract_speculate_itv_residual_cell
 
 type residual_cell_id = T.residual_cell_id
 type residual_value = T.residual_value
@@ -49,13 +50,26 @@ let cell_key = T.residual_cell_key
 let sort_json xs =
   List.sort (fun a b -> compare (string_of_json a) (string_of_json b)) xs
 
-let join _old_value new_value = new_value
+let typed_cell_id_of_equation equation =
+  ItvCell.cell_id
+    ~table:equation.T.target_table
+    ~node:equation.T.target_node
+    ~location:equation.T.target_location
 
-let leq left right =
-  string_of_json left = string_of_json right
+let join_row equation old_row new_row =
+  ItvCell.join_row_for_target_cell
+    ~target:(typed_cell_id_of_equation equation)
+    ~old_row
+    ~new_row
 
-let changed old_value new_value =
-  not (leq (join old_value new_value) old_value)
+let row_leq equation left_row right_row =
+  ItvCell.leq_row_for_target_cell
+    ~target:(typed_cell_id_of_equation equation)
+    ~left_row
+    ~right_row
+
+let changed equation old_value new_value =
+  not (row_leq equation (join_row equation old_value new_value) old_value)
 
 let dependency_edges equations =
   equations
@@ -213,14 +227,19 @@ let solve ~input ~static_rows ~equations =
         | Some cell -> Some cell.row
         | None -> None
       in
+      let joined_row =
+        match old_row with
+        | Some row -> join_row equation row result.T.row
+        | None -> result.T.row
+      in
       let changed =
         match old_row with
-        | Some row -> changed row result.T.row
+        | Some row -> changed equation row result.T.row
         | None -> true
       in
       if changed then begin
         incr changed_cell_count;
-        Hashtbl.replace state key { row = result.T.row; execution = result.T.execution };
+        Hashtbl.replace state key { row = joined_row; execution = result.T.execution };
         List.iter (enqueue "changed-cell-dependent" iteration) (dependent_equations equations equation)
       end;
       incr application_count;
@@ -264,9 +283,10 @@ let solve ~input ~static_rows ~equations =
     "worklist_drained", `Bool true;
     "iteration_bound", `Int max_iterations;
     "solver_policy", `String "deterministic-worklist-bounded";
-    "lattice_value_model", `String "current-json-cell-evidence";
-    "lattice_join", `String "replace-with-new-evidence";
-    "lattice_leq", `String "json-string-equality-v1";
+    "lattice_value_model", `String ItvCell.value_model_id;
+    "lattice_join", `String ItvCell.join_id;
+    "lattice_leq", `String ItvCell.leq_id;
+    "typed_lattice_adapter", `String "solver-row-target-cell/v1";
     "static_row_count", `Int (List.length static_rows);
     "final_row_count", `Int (List.length final_rows);
     "residual_equation_ids", `List (List.map (fun eq -> `String eq.T.equation_id) equations);
