@@ -9,6 +9,7 @@ module Residual = Abstract_speculate_residual_value
 module Solver = Abstract_speculate_residual_solver
 module ScalarCall = Abstract_speculate_residual_scalar_call
 module MemoryDelta = Abstract_speculate_residual_memory_delta
+module CycleScheduler = Abstract_speculate_residual_cycle_scheduler
 
 let schema_version = "abstract-speculate-residual-linking-pe/v1"
 
@@ -885,6 +886,21 @@ let shared_scc_cell ~kind ~module_id ~symbol ~location =
 
 let shared_scc_cell_key cell = StageT.residual_cell_key cell
 
+let residual_scheduler_edges edges =
+  edges
+  |> List.map (fun (importer_id, provider_id, import_name, export_name) ->
+       CycleScheduler.residual_call_binding_edge
+         ~importer_module:importer_id
+         ~provider_module:provider_id
+         ~import_name
+         ~export_name)
+
+let residual_scheduler_for_edges ~scc_id ~group_ids ~edges =
+  CycleScheduler.compute
+    ~scc_id
+    ~nodes:group_ids
+    ~edges:(residual_scheduler_edges edges)
+
 let int_of_cell_json cell =
   match member "value" cell with
   | `Int n -> Some n
@@ -1041,6 +1057,31 @@ let observable_sink_cells ~entry module_outputs =
        else None)
   |> List.sort_uniq compare
 
+let shared_scc_edge_evidence_id ~importer_module ~provider_module ~import_name ~export_name =
+  "shared-scc-edge:" ^ importer_module ^ ":" ^ import_name ^ "<-" ^
+  provider_module ^ ":" ^ export_name
+
+let shared_scc_edge_json (importer_module, provider_module, import_name, export_name) =
+  `Assoc [
+    "importer_module", `String importer_module;
+    "provider_module", `String provider_module;
+    "import_name", `String import_name;
+    "export_name", `String export_name;
+    "edge_kind", `String "import-export-function-dependency";
+    "source", `String "parsed-cil-obligation-match";
+    "provenance_level", `String "declared-edge";
+    "stable_evidence_id", `String (shared_scc_edge_evidence_id
+      ~importer_module ~provider_module ~import_name ~export_name);
+  ]
+
+let shared_scc_value_provenance ~scc_id ~edge_kind ~stable_suffix =
+  [
+    "edge_kind", `String edge_kind;
+    "source", `String "shared_scc_final_cells";
+    "provenance_level", `String "solver-final-cell";
+    "stable_evidence_id", `String ("shared-scc:" ^ scc_id ^ ":" ^ stable_suffix);
+  ]
+
 let shared_scc_solver_report
     ~scc_id
     ~group_ids
@@ -1124,14 +1165,17 @@ let shared_scc_solver_report
     |> List.map (fun export ->
          let cell = export_cell export in
          let solver_value = value_of cell in
-         `Assoc [
+         `Assoc ([
            "provider_module", `String export.provider_module;
            "export_name", `String export.export_name;
            "value", `Int export.return_value;
            "source_shared_scc_cell_id", `String (shared_scc_cell_key cell);
            "shared_scc_value_matches", `Bool (solver_value = Some export.return_value);
            "derivation_source", `String "shared_scc_final_cells";
-         ])
+         ] @ shared_scc_value_provenance
+           ~scc_id
+           ~edge_kind:"shared-scc-export-final-cell"
+           ~stable_suffix:("export:" ^ export.provider_module ^ ":" ^ export.export_name)))
     |> sort_json
   in
   let imported_values =
@@ -1144,17 +1188,21 @@ let shared_scc_solver_report
            |> List.map (fun (sink_location, value, expression) ->
                 let sink_cell = observable_cell entry sink_location in
                 let sink_solver_value = value_of sink_cell in
-                `Assoc [
+                `Assoc ([
                   "observable_kind", `String "imported-cyclic-sink-write";
                   "observable_location", `String sink_location;
                   "semantic_expression", `String expression;
                   "value", `Int value;
                   "source_shared_scc_cell_id", `String (shared_scc_cell_key sink_cell);
                   "shared_scc_value_matches", `Bool (sink_solver_value = Some value);
-                ])
+                ] @ shared_scc_value_provenance
+                  ~scc_id
+                  ~edge_kind:"shared-scc-observable-copy"
+                  ~stable_suffix:("observable:" ^ entry.importer_module ^ ":" ^
+                                  entry.import_name ^ ":" ^ sink_location)))
            |> sort_json
          in
-         `Assoc [
+         `Assoc ([
            "importer_module", `String entry.importer_module;
            "provider_module", `String entry.provider_module;
            "import_name", `String entry.import_name;
@@ -1172,7 +1220,12 @@ let shared_scc_solver_report
                       ~expected_value:entry.linked_return_value
                       module_outputs);
            "derivation_source", `String "shared_scc_final_cells";
-         ])
+         ] @ shared_scc_value_provenance
+           ~scc_id
+           ~edge_kind:"shared-scc-import-copy"
+           ~stable_suffix:("import:" ^ entry.importer_module ^ ":" ^
+                           entry.import_name ^ "<-" ^ entry.provider_module ^ ":" ^
+                           entry.export_name)))
     |> sort_json
   in
   let solver_log = solved.Solver.solver_log in
@@ -1197,25 +1250,34 @@ let shared_scc_solver_report
   in
   let dependencies = member "residual_dependencies" solver_log in
   let schedule = member "worklist_schedule" solver_log in
+  let scheduler = residual_scheduler_for_edges ~scc_id ~group_ids ~edges in
+  let scheduler_json = CycleScheduler.to_json scheduler in
+  let scheduler_callgraph_backed = CycleScheduler.callgraph_backed scheduler in
   `Assoc [
     "scc_id", `String scc_id;
     "shared_scc_worklist_run", `Bool shared_scc_worklist_run;
     "worklist_drained", `Bool (bool_field "worklist_drained" solver_log = Some true);
     "solver_log", solver_log;
     "shared_scc_members", `List (List.map (fun id -> `String id) group_ids);
-    "shared_scc_edges",
-      `List (edges |> List.map (fun (importer_id, provider_id, import_name, export_name) ->
-        `Assoc [
-          "importer_module", `String importer_id;
-          "provider_module", `String provider_id;
-          "import_name", `String import_name;
-          "export_name", `String export_name;
-        ]));
+    "shared_scc_edges", `List (edges |> List.map shared_scc_edge_json);
     "shared_scc_equation_ids", member "residual_equation_ids" solver_log;
     "shared_scc_cell_ids", `List (final_cells |> List.map (fun cell -> member "shared_scc_cell_id" cell));
     "shared_scc_dependencies", dependencies;
     "shared_scc_state_read_count", member "state_read_count" solver_log;
     "shared_scc_worklist_schedule", schedule;
+    "shared_scc_scheduler", scheduler_json;
+    "shared_scc_scheduler_source", `String (CycleScheduler.source scheduler);
+    "shared_scc_scheduler_edges", `List (List.map CycleScheduler.edge_to_json (CycleScheduler.edges scheduler));
+    "shared_scc_callgraph_backed_schedule", `Bool scheduler_callgraph_backed;
+    "shared_scc_final_cell_scheduler_bridge",
+      `Assoc [
+        "scheduler_scc_id", `String scc_id;
+        "scheduler_edge_count", `Int (List.length (CycleScheduler.edges scheduler));
+        "shared_scc_final_cell_count", `Int (List.length final_cells);
+        "final_values_derive_from_shared_scc_final_cells", `Bool (imported_exact && exports_exact);
+        "callgraph_backed_schedule_required_for_cycle_acceptance", `Bool true;
+        "callgraph_backed_schedule_present", `Bool scheduler_callgraph_backed;
+      ];
     "shared_scc_final_cells", `List final_cells;
     "linked_cycle_accepted_exports", `List accepted_exports;
     "imported_cyclic_observable_values", `List imported_values;
@@ -1382,31 +1444,12 @@ let execute_modules modules inputs =
            Some (importer_id, provider_id, import_decl.name, export_decl.name)
          else None)
   in
-  let reachable module_ids source target =
-    let rec visit seen node =
-      node = target ||
-      if List.mem node seen then false
-      else
-        dependency_edges_for module_ids
-        |> List.exists (fun (importer_id, provider_id, _, _) ->
-             importer_id = node && visit (node :: seen) provider_id)
-    in
-    visit [] source
+  let scheduler_edges_for module_ids =
+    dependency_edges_for module_ids |> residual_scheduler_edges
   in
   let scc_groups bundles =
     let ids = bundles |> List.map module_id |> sort_strings in
-    let rec loop assigned groups = function
-      | [] -> List.rev groups
-      | id :: rest when List.mem id assigned -> loop assigned groups rest
-      | id :: rest ->
-          let group =
-            ids
-            |> List.filter (fun other -> reachable ids id other && reachable ids other id)
-            |> sort_strings
-          in
-          loop (assigned @ group) (group :: groups) rest
-    in
-    loop [] [] ids
+    CycleScheduler.scc_groups ~nodes:ids ~edges:(scheduler_edges_for ids)
   in
   let cyclic_group group =
     List.length group > 1 ||
@@ -1423,19 +1466,27 @@ let execute_modules modules inputs =
   in
   let scc_topology_json scc_id group =
     let edges = dependency_edges_for group |> List.sort compare in
+    let scheduler = residual_scheduler_for_edges ~scc_id ~group_ids:group ~edges in
+    let scheduler_edges = CycleScheduler.edges scheduler in
     let is_cyclic = cyclic_group group in
     `Assoc [
       "scc_id", `String scc_id;
       "members", `List (List.map (fun id -> `String id) group);
-      "edges", `List (edges |> List.map (fun (importer_id, provider_id, import_name, export_name) ->
-        `Assoc [
-          "importer_module", `String importer_id;
-          "provider_module", `String provider_id;
-          "import_name", `String import_name;
-          "export_name", `String export_name;
-        ]));
+      "edges", `List (edges |> List.map shared_scc_edge_json);
       "is_cyclic", `Bool is_cyclic;
       "topology_kind", `String (if is_cyclic then "cyclic-import-export-scc" else "acyclic-singleton");
+      "scheduler_source", `String (CycleScheduler.source scheduler);
+      "callgraph_backed_scheduler", `Bool (CycleScheduler.callgraph_backed scheduler);
+      "scheduler_edges", `List (List.map CycleScheduler.edge_to_json scheduler_edges);
+      "scheduler_sccs",
+        begin match CycleScheduler.to_json scheduler with
+        | `Assoc fields ->
+            begin match List.assoc_opt "sccs" fields with
+            | Some sccs -> sccs
+            | None -> `List []
+            end
+        | _ -> `List []
+        end;
     ]
   in
   let binding_json ~round ~origin (entry : linked_environment_entry) =
@@ -1568,6 +1619,8 @@ let execute_modules modules inputs =
         [] bootstrap_exports []
     in
     let edges = dependency_edges_for group_ids in
+    let scheduler = residual_scheduler_for_edges ~scc_id ~group_ids ~edges in
+    let scheduler_json = CycleScheduler.to_json scheduler in
     let bootstrap_environment =
       group_bundles
       |> List.concat_map (fun bundle ->
@@ -1636,6 +1689,9 @@ let execute_modules modules inputs =
       "worklist_drained", `Bool true;
       "stable_exports", `Bool true;
       "bootstrap_bindings_remaining", `Int 0;
+      "scheduler", scheduler_json;
+      "scheduler_source", `String (CycleScheduler.source scheduler);
+      "callgraph_backed_scheduler", `Bool (CycleScheduler.callgraph_backed scheduler);
       "shared_scc_solver", shared_scc_solver;
       "rounds", `List [bootstrap_round; solver_round];
     ] in
@@ -1740,6 +1796,25 @@ let execute_modules modules inputs =
      List.for_all (fun solver -> bool_field "shared_scc_worklist_run" solver = Some true)
        linked_cycle_shared_scc_solvers)
   in
+  let linked_cycle_schedulers =
+    cycle_reports
+    |> List.filter_map (fun report -> assoc_field "scheduler" report)
+    |> sort_json
+  in
+  let linked_cycle_shared_scc_schedulers =
+    linked_cycle_shared_scc_solvers
+    |> List.filter_map (fun solver -> assoc_field "shared_scc_scheduler" solver)
+    |> sort_json
+  in
+  let linked_cycle_callgraph_backed_schedule =
+    linked_cycle_scc_count = 0 ||
+    (linked_cycle_schedulers <> [] &&
+     linked_cycle_shared_scc_schedulers <> [] &&
+     List.for_all (fun report -> bool_field "callgraph_backed_schedule" report = Some true)
+       linked_cycle_schedulers &&
+     List.for_all (fun report -> bool_field "callgraph_backed_schedule" report = Some true)
+       linked_cycle_shared_scc_schedulers)
+  in
   let linked_cycle_shared_scc_state_read_count =
     linked_cycle_shared_scc_solvers
     |> List.fold_left (fun acc solver ->
@@ -1800,7 +1875,7 @@ let execute_modules modules inputs =
       ~matched
       ~unresolved
       ~cycle_scc_count:linked_cycle_scc_count
-      ~cycle_worklist_drained:(linked_cycle_worklist_drained && linked_cycle_shared_scc_worklist_run && linked_cycle_exact_singleton_parity)
+      ~cycle_worklist_drained:(linked_cycle_worklist_drained && linked_cycle_shared_scc_worklist_run && linked_cycle_exact_singleton_parity && linked_cycle_callgraph_backed_schedule)
   in
   let module_logs =
     per_module
@@ -1889,12 +1964,15 @@ let execute_modules modules inputs =
       "linked_worklist_drained", `Bool linked_worklist_drained;
       "linked_overlay_only", `Bool false;
       "linked_residual_analyzer_evidence", linked_run_evidence_to_json linked_residual_analyzer_evidence;
-      "linked_cyclic_residual_solver_run", `Bool (linked_cycle_scc_count > 0 && linked_residual_analyzer_evidence.linked_residual_analyzer_ran && linked_cycle_shared_scc_worklist_run);
+      "linked_cyclic_residual_solver_run", `Bool (linked_cycle_scc_count > 0 && linked_residual_analyzer_evidence.linked_residual_analyzer_ran && linked_cycle_shared_scc_worklist_run && linked_cycle_callgraph_backed_schedule);
       "linked_cycle_scc_count", `Int linked_cycle_scc_count;
       "linked_cycle_iteration_count", `Int linked_cycle_iteration_count;
-      "linked_cycle_worklist_drained", `Bool (linked_cycle_worklist_drained && linked_cycle_shared_scc_worklist_run);
+      "linked_cycle_worklist_drained", `Bool (linked_cycle_worklist_drained && linked_cycle_shared_scc_worklist_run && linked_cycle_callgraph_backed_schedule);
       "linked_cycle_obligations_closed", `Bool linked_cycle_obligations_closed;
       "linked_cycle_topology", `List (List.map (fun report -> member "topology" report) cycle_reports);
+      "linked_cycle_scheduler", `List linked_cycle_schedulers;
+      "linked_cycle_shared_scc_scheduler", `List linked_cycle_shared_scc_schedulers;
+      "linked_cycle_callgraph_backed_schedule", `Bool linked_cycle_callgraph_backed_schedule;
       "linked_cycle_rounds", `List (cycle_reports |> List.concat_map (fun report -> list_field "rounds" report));
       "linked_cycle_changed_bindings", `List linked_cycle_changed_bindings;
       "linked_cycle_bootstrap_bindings_remaining", `Int linked_cycle_bootstrap_bindings_remaining;
@@ -2011,6 +2089,9 @@ let artifact_json ~doc_path analyzer output =
     "linked_cycle_worklist_drained", output.execution_log |> member "linked_cycle_worklist_drained";
     "linked_cycle_obligations_closed", output.execution_log |> member "linked_cycle_obligations_closed";
     "linked_cycle_topology", output.execution_log |> member "linked_cycle_topology";
+    "linked_cycle_scheduler", output.execution_log |> member "linked_cycle_scheduler";
+    "linked_cycle_shared_scc_scheduler", output.execution_log |> member "linked_cycle_shared_scc_scheduler";
+    "linked_cycle_callgraph_backed_schedule", output.execution_log |> member "linked_cycle_callgraph_backed_schedule";
     "linked_cycle_rounds", output.execution_log |> member "linked_cycle_rounds";
     "linked_cycle_changed_bindings", output.execution_log |> member "linked_cycle_changed_bindings";
     "linked_cycle_bootstrap_bindings_remaining", output.execution_log |> member "linked_cycle_bootstrap_bindings_remaining";

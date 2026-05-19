@@ -242,13 +242,32 @@ let last = function
   | [] -> None
   | xs -> Some (List.nth xs (List.length xs - 1))
 
+let cycle_topology_edges topology =
+  topology |> List.concat_map (fun scc -> list_field "edges" scc)
+
+let provenance_fields_present ?edge_kind json =
+  let kind_ok =
+    match edge_kind with
+    | None -> string_field "edge_kind" json <> ""
+    | Some expected -> string_field "edge_kind" json = expected
+  in
+  kind_ok &&
+  string_field "source" json <> "" &&
+  string_field "provenance_level" json <> "" &&
+  string_field "stable_evidence_id" json <> ""
+
 let cycle_topology_has_edge ~import_name ~export_name topology =
-  topology
-  |> List.exists (fun scc ->
-       list_field "edges" scc
-       |> List.exists (fun edge ->
-            string_field "import_name" edge = import_name &&
-            string_field "export_name" edge = export_name))
+  cycle_topology_edges topology
+  |> List.exists (fun edge ->
+       string_field "import_name" edge = import_name &&
+       string_field "export_name" edge = export_name)
+
+let cycle_topology_edge_provenance_passes topology =
+  let edges = cycle_topology_edges topology in
+  edges <> [] &&
+  List.for_all
+    (provenance_fields_present ~edge_kind:"import-export-function-dependency")
+    edges
 
 let json_key json = Yojson.Safe.to_string json
 
@@ -283,18 +302,32 @@ let source_cell_matches_final residual value_json =
 let observable_value_matches_final residual obs =
   string_field "observable_kind" obs = "imported-cyclic-sink-write" &&
   string_field "observable_location" obs <> "" &&
+  provenance_fields_present ~edge_kind:"shared-scc-observable-copy" obs &&
   source_cell_matches_final residual obs &&
   bool_field "shared_scc_value_matches" obs
 
+let cyclic_topology_edges residual =
+  list_field "linked_cycle_topology" residual
+  |> List.concat_map (fun scc -> if bool_field "is_cyclic" scc then list_field "edges" scc else [])
+
+let cyclic_topology_edges_have_cycle residual =
+  let pairs =
+    cyclic_topology_edges residual
+    |> List.map (fun edge -> string_field "importer_module" edge, string_field "provider_module" edge)
+  in
+  pairs |> List.exists (fun (src, dst) ->
+    src <> "" && dst <> "" &&
+    (src = dst || List.exists (fun (src', dst') -> src' = dst && dst' = src) pairs))
+
 let imported_cyclic_values_exact residual =
   let values = list_field "imported_cyclic_observable_values" residual in
-  let expected_pair ~importer ~import_name ~provider ~export_name =
+  let value_has_edge edge =
     values
     |> List.exists (fun value ->
-         string_field "importer_module" value = importer &&
-         string_field "import_name" value = import_name &&
-         string_field "provider_module" value = provider &&
-         string_field "export_name" value = export_name &&
+         string_field "importer_module" value = string_field "importer_module" edge &&
+         string_field "import_name" value = string_field "import_name" edge &&
+         string_field "provider_module" value = string_field "provider_module" edge &&
+         string_field "export_name" value = string_field "export_name" edge &&
          bool_field "exact_singleton" value &&
          bool_field "no_extra_imprecision" value &&
          bool_field "shared_scc_value_matches" value &&
@@ -307,17 +340,33 @@ let imported_cyclic_values_exact residual =
   values <> [] &&
   bool_field "cyclic_imported_value_exact_singleton_parity" residual &&
   bool_field "cycle_final_values_derive_from_shared_scc_final_cells" residual &&
-  expected_pair ~importer:"a.c" ~import_name:"cycle_b" ~provider:"b.c" ~export_name:"cycle_b" &&
-  expected_pair ~importer:"b.c" ~import_name:"cycle_a" ~provider:"a.c" ~export_name:"cycle_a"
+  List.for_all value_has_edge (cyclic_topology_edges residual)
 
 let shared_scc_export_values_exact residual =
   let exports = list_field "linked_cycle_accepted_exports" residual in
   exports <> [] &&
   List.for_all (fun export ->
     string_field "derivation_source" export = "shared_scc_final_cells" &&
+    provenance_fields_present ~edge_kind:"shared-scc-export-final-cell" export &&
     bool_field "shared_scc_value_matches" export &&
     source_cell_matches_final residual export)
     exports
+
+let shared_scc_topology_dependencies_present residual =
+  cyclic_topology_edges residual
+  |> List.for_all (fun edge ->
+       shared_scc_dependency_mentions residual
+         ("export-return:" ^ string_field "provider_module" edge ^ ":" ^ string_field "export_name" edge) &&
+       shared_scc_dependency_mentions residual
+         ("import-observable:" ^ string_field "importer_module" edge ^ ":" ^ string_field "import_name" edge))
+
+let shared_scc_schedule_has_changed_dependency residual =
+  list_field "shared_scc_worklist_schedule" residual
+  |> List.exists (fun event ->
+       string_field "event" event = "enqueue" &&
+       string_field "reason" event = "changed-cell-dependent" &&
+       string_field "equation_id" event <> "" &&
+       string_field "target" event <> "")
 
 let shared_scc_solver_evidence_passes residual =
   bool_field "shared_scc_worklist_run" residual &&
@@ -326,15 +375,13 @@ let shared_scc_solver_evidence_passes residual =
   list_field "shared_scc_cell_ids" residual <> [] &&
   list_field "shared_scc_dependencies" residual <> [] &&
   list_field "shared_scc_worklist_schedule" residual <> [] &&
+  shared_scc_schedule_has_changed_dependency residual &&
   list_field "shared_scc_final_cells" residual <> [] &&
   sorted_json_list (list_field "shared_scc_equation_ids" residual) &&
   sorted_json_list (list_field "shared_scc_cell_ids" residual) &&
   sorted_json_list (list_field "shared_scc_dependencies" residual) &&
   sorted_json_list (list_field "shared_scc_final_cells" residual) &&
-  shared_scc_dependency_mentions residual "export-return:b.c:cycle_b" &&
-  shared_scc_dependency_mentions residual "export-return:a.c:cycle_a" &&
-  shared_scc_dependency_mentions residual "import-observable:a.c:cycle_b" &&
-  shared_scc_dependency_mentions residual "import-observable:b.c:cycle_a" &&
+  shared_scc_topology_dependencies_present residual &&
   imported_cyclic_values_exact residual &&
   shared_scc_export_values_exact residual
 
@@ -372,7 +419,9 @@ let recomputed_cycle_evidence_passes residual =
    |> List.for_all (fun solver ->
         bool_field "shared_scc_authoritative_for_cycle_acceptance" solver &&
         not (bool_field "linker_rerun_convergence_used_for_acceptance" solver) &&
-        string_field "final_linked_environment_source" solver = "shared_scc_final_cells")) &&
+        string_field "final_linked_environment_source" solver = "shared_scc_final_cells" &&
+        List.for_all (provenance_fields_present ~edge_kind:"import-export-function-dependency")
+          (list_field "shared_scc_edges" solver))) &&
   int_field "linked_cycle_scc_count" residual = cyclic_scc_count &&
   cyclic_scc_count > 0 &&
   int_field "linked_cycle_iteration_count" residual = max 0 (List.length rounds - 1) &&
@@ -380,23 +429,137 @@ let recomputed_cycle_evidence_passes residual =
   topology <> [] &&
   rounds <> [] &&
   changed_counts = reported_changed_counts &&
-  cycle_topology_has_edge ~import_name:"cycle_b" ~export_name:"cycle_b" topology &&
-  cycle_topology_has_edge ~import_name:"cycle_a" ~export_name:"cycle_a" topology &&
+  cyclic_topology_edges_have_cycle residual &&
   last_round_stable &&
   shared_scc_solver_evidence_passes residual
 
-let cycle_evidence_obligations witness_id residual =
-  if witness_id <> "cycle_topology" then []
+let scheduler_reports residual =
+  let as_reports = function
+    | `List xs -> xs
+    | `Assoc _ as report -> [report]
+    | _ -> []
+  in
+  as_reports (member "linked_cycle_scheduler" residual) @
+  as_reports (member "linked_cycle_scheduler_evidence" residual)
+
+let scheduler_edges residual =
+  let top_level = list_field "linked_cycle_scheduler_edges" residual in
+  let root_edges =
+    scheduler_reports residual |> List.concat_map (list_field "edges")
+  in
+  let nested_topology_edges =
+    list_field "linked_cycle_topology" residual
+    |> List.concat_map (fun scc -> list_field "scheduler_edges" scc)
+  in
+  top_level @ root_edges @ nested_topology_edges
+
+let scheduler_sccs residual =
+  list_field "linked_cycle_scheduler_sccs" residual @
+  (scheduler_reports residual |> List.concat_map (list_field "sccs")) @
+  (list_field "linked_cycle_topology" residual |> List.concat_map (list_field "scheduler_sccs"))
+
+let scheduler_provenance_is_call_backed provenance =
+  List.mem provenance
+    ["direct_program_callgraph";
+     "direct-program-callgraph";
+     "direct_program_callgraph_edge";
+     "direct-program-callgraph-edge";
+     "residual_call_binding";
+     "residual-call-binding";
+     "residual_binding_call_provenance";
+     "residual-binding-call-provenance"]
+
+let scheduler_claims_callgraph_backed residual =
+  bool_true_field "linked_cycle_callgraph_backed_schedule" residual ||
+  (scheduler_reports residual @ list_field "linked_cycle_topology" residual) |> List.exists (fun root ->
+    bool_true_field "callgraph_backed" root ||
+    bool_true_field "callgraph_backed_schedule" root ||
+    bool_true_field "callgraph_backed_scheduler" root ||
+    string_field "scheduler_claim" root = "callgraph-backed" ||
+    string_field "claim" root = "callgraph-backed" ||
+    string_field "scheduler_kind" root = "callgraph-backed" ||
+    string_field "schedule_source" root = "callgraph-backed" ||
+    string_field "scheduler_source" root = "residual-call-binding-callgraph")
+
+let scheduler_edge_evidence_id edge =
+  let direct = string_field "evidence_id" edge in
+  if direct <> "" then direct else string_field "stable_evidence_id" edge
+
+let scheduler_edge_importer edge =
+  let caller = string_field "importer_or_caller" edge in
+  if caller <> "" then caller else string_field "importer_module" edge
+
+let scheduler_edge_provider edge =
+  let callee = string_field "provider_or_callee" edge in
+  if callee <> "" then callee else string_field "provider_module" edge
+
+let scheduler_edge_symbol edge =
+  let symbol = string_field "symbol" edge in
+  if symbol <> "" then symbol else string_field "import_name" edge
+
+let scheduler_edge_has_required_provenance edge =
+  string_field "edge_kind" edge <> "" &&
+  string_field "source" edge <> "" &&
+  scheduler_provenance_is_call_backed (string_field "provenance_level" edge) &&
+  scheduler_edge_evidence_id edge <> "" &&
+  scheduler_edge_importer edge <> "" &&
+  scheduler_edge_provider edge <> "" &&
+  scheduler_edge_symbol edge <> "" &&
+  not (contains (string_field "source" edge) "bootstrap") &&
+  not (contains (string_field "source" edge) "provider-derived")
+
+let scheduler_edges_have_cycle edges =
+  let pairs =
+    edges |> List.map (fun edge -> scheduler_edge_importer edge, scheduler_edge_provider edge)
+  in
+  pairs |> List.exists (fun (src, dst) ->
+    src <> "" && dst <> "" &&
+    (src = dst || List.exists (fun (src', dst') -> src' = dst && dst' = src) pairs))
+
+let scheduler_fixture_edges_present witness_id edges =
+  if witness_id = "callgraph_scheduler_cycle" then
+    let has_edge ~importer ~provider ~symbol =
+      edges |> List.exists (fun edge ->
+        scheduler_edge_importer edge = importer &&
+        scheduler_edge_provider edge = provider &&
+        contains (scheduler_edge_symbol edge) symbol)
+    in
+    has_edge ~importer:"a.c" ~provider:"b.c" ~symbol:"scheduler_b" &&
+    has_edge ~importer:"b.c" ~provider:"a.c" ~symbol:"scheduler_a"
+  else true
+
+let callgraph_scheduler_evidence_passes witness_id residual =
+  if witness_id <> "callgraph_scheduler_cycle" then true
+  else
+    let edges = scheduler_edges residual in
+    let reported_scc_count =
+      match int_json_field "linked_cycle_scheduler_scc_count" residual with
+      | Some n -> n
+      | None -> int_field "linked_cycle_scc_count" residual
+    in
+    recomputed_cycle_evidence_passes residual &&
+    scheduler_claims_callgraph_backed residual &&
+    edges <> [] &&
+    List.for_all scheduler_edge_has_required_provenance edges &&
+    scheduler_edges_have_cycle edges &&
+    scheduler_fixture_edges_present witness_id edges &&
+    scheduler_sccs residual <> [] &&
+    reported_scc_count > 0 &&
+    reported_scc_count = int_field "linked_cycle_scc_count" residual &&
+    shared_scc_solver_evidence_passes residual
+
+let cycle_evidence_obligations witness_id category residual =
+  if witness_id <> "cycle_topology" && witness_id <> "callgraph_scheduler_cycle" then []
   else [
     `Assoc [
       "name", `String "cyclic_residual_fixpoint_evidence";
-      "category", `String "cycle-topology";
+      "category", `String category;
       "witness_id", `String witness_id;
       "status", `String (if recomputed_cycle_evidence_passes residual then "pass" else "fail");
       "linked_cycle_scc_count", member "linked_cycle_scc_count" residual;
       "linked_cycle_iteration_count", member "linked_cycle_iteration_count" residual;
       "linked_cycle_bootstrap_bindings_remaining", member "linked_cycle_bootstrap_bindings_remaining" residual;
-      "evidence_source", `String "recomputed from linked_cycle_topology and linked_cycle_rounds";
+      "evidence_source", `String "recomputed from linked_cycle_topology, per-edge provenance, and linked_cycle_rounds";
     ]
     ;
     `Assoc [
@@ -408,7 +571,21 @@ let cycle_evidence_obligations witness_id residual =
       "shared_scc_state_read_count", member "shared_scc_state_read_count" residual;
       "imported_cyclic_observable_values", member "imported_cyclic_observable_values" residual;
       "shared_scc_final_cells", member "shared_scc_final_cells" residual;
-      "evidence_source", `String "shared_scc_final_cells source_shared_scc_cell_id exact singleton cross-check";
+      "evidence_source", `String "shared_scc_final_cells source_shared_scc_cell_id exact singleton cross-check with stable provenance ids";
+    ]
+  ] @
+  if witness_id <> "callgraph_scheduler_cycle" then []
+  else [
+    `Assoc [
+      "name", `String "callgraph_backed_scheduler_evidence";
+      "category", `String "cycle-scheduler-provenance";
+      "witness_id", `String witness_id;
+      "status", `String (if callgraph_scheduler_evidence_passes witness_id residual then "pass" else "fail");
+      "scheduler_claim", member "linked_cycle_scheduler" residual;
+      "scheduler_edges", `List (scheduler_edges residual);
+      "scheduler_sccs", `List (scheduler_sccs residual);
+      "evidence_source",
+        `String "recomputed from linked_cycle_scheduler edge provenance, SCC count, and shared_scc final-cell bridge";
     ]
   ]
 
@@ -434,7 +611,7 @@ let witness_report witness =
     (witness_id ^ ": oracle artifact identity mismatch");
   require_external_summaries witness_id residual;
   let summaries = list_field "external_summaries" residual in
-  let obligations = obligations_for witness_id category residual oracle @ cycle_evidence_obligations witness_id residual in
+  let obligations = obligations_for witness_id category residual oracle @ cycle_evidence_obligations witness_id category residual in
   let residual_obs, oracle_obs = normalized_observations witness_id residual oracle in
   let selected_relation = Relation.selected_observation_relation_json ~witness_id ~residual ~oracle in
   let full_itv_relation = Relation.full_itv_semantic_relation_json ~witness_id ~residual ~oracle in
@@ -749,6 +926,93 @@ let negative_cases witnesses =
         not (recomputed_cycle_evidence_passes (mutation residual))
     | None -> false
   in
+  let callgraph_scheduler_evidence_fails mutation =
+    match find "callgraph_scheduler_cycle" with
+    | Some (id, _category, residual, _oracle, _) ->
+        not (callgraph_scheduler_evidence_passes id (mutation residual))
+    | None -> false
+  in
+  let mutate_first_scheduler_edge mutate residual =
+    let mutate_report_edges report =
+      match list_field "edges" report with
+      | first :: rest -> set_path ["edges"] (`List (mutate first :: rest)) report
+      | [] -> report
+    in
+    let mutate_root_edges field residual =
+      match member field residual with
+      | `List (first :: rest) ->
+          set_path [field] (`List (mutate_report_edges first :: rest)) residual
+      | `Assoc _ as root ->
+          set_path [field] (mutate_report_edges root) residual
+      | _ -> residual
+    in
+    let residual =
+      match list_field "linked_cycle_scheduler_edges" residual with
+      | first :: rest ->
+          set_path ["linked_cycle_scheduler_edges"] (`List (mutate first :: rest)) residual
+      | [] -> residual
+    in
+    let residual =
+      match list_field "linked_cycle_topology" residual with
+      | first_scc :: rest_sccs ->
+          begin match list_field "scheduler_edges" first_scc with
+          | first :: rest ->
+              set_path ["linked_cycle_topology"]
+                (`List (set_path ["scheduler_edges"] (`List (mutate first :: rest)) first_scc :: rest_sccs))
+                residual
+          | [] -> residual
+          end
+      | [] -> residual
+    in
+    residual
+    |> mutate_root_edges "linked_cycle_scheduler"
+    |> mutate_root_edges "linked_cycle_scheduler_evidence"
+  in
+  let clear_scheduler_evidence residual =
+    residual
+    |> set_path ["linked_cycle_scheduler"] (`Assoc [])
+    |> set_path ["linked_cycle_scheduler_evidence"] (`Assoc [])
+    |> set_path ["linked_cycle_scheduler_edges"] (`List [])
+    |> set_path ["linked_cycle_scheduler_sccs"] (`List [])
+    |> set_path ["linked_cycle_callgraph_backed_schedule"] (`Bool false)
+    |> set_path ["linked_cycle_topology"] (`List [])
+  in
+  let scheduler_dependency_only_relabel residual =
+    residual
+    |> mutate_first_scheduler_edge (fun edge ->
+         edge
+         |> set_path ["provenance_level"] (`String "residual_dependency_only")
+         |> set_path ["source"] (`String "residual-dependency-only"))
+  in
+  let scheduler_missing_required_edge_field residual =
+    residual
+    |> mutate_first_scheduler_edge (fun edge -> set_path ["evidence_id"] (`String "") edge)
+  in
+  let scheduler_scc_count_mismatch residual =
+    residual
+    |> set_path ["linked_cycle_scheduler_scc_count"] (`Int 999)
+    |> set_path ["linked_cycle_scc_count"] (`Int 999)
+  in
+  let old_topology_relabelled_without_provenance residual =
+    let old_edges =
+      list_field "linked_cycle_topology" residual
+      |> List.concat_map (fun scc -> list_field "edges" scc)
+    in
+    let old_sccs = list_field "linked_cycle_topology" residual in
+    residual
+    |> set_path ["linked_cycle_scheduler"]
+         (`List [
+           `Assoc [
+             "callgraph_backed_schedule", `Bool true;
+             "scheduler_source", `String "residual-call-binding-callgraph";
+             "edges", `List old_edges;
+             "sccs", `List old_sccs;
+           ]
+         ])
+    |> set_path ["linked_cycle_scheduler_edges"] (`List [])
+    |> set_path ["linked_cycle_scheduler_sccs"] (`List [])
+    |> set_path ["linked_cycle_callgraph_backed_schedule"] (`Bool true)
+  in
   let mutate_first_imported_value path value residual =
     match list_field "imported_cyclic_observable_values" residual with
     | first :: rest ->
@@ -797,6 +1061,28 @@ let negative_cases witnesses =
         in
         set_path ["linked_cycle_topology"] (`List (set_path ["edges"] (`List edges) first :: rest)) residual
     | [] -> residual
+  in
+  let mutate_first_topology_edge path value residual =
+    match list_field "linked_cycle_topology" residual with
+    | first :: rest ->
+        begin match list_field "edges" first with
+        | edge :: edge_rest ->
+            let first = set_path ["edges"] (`List (set_path path value edge :: edge_rest)) first in
+            set_path ["linked_cycle_topology"] (`List (first :: rest)) residual
+        | [] -> residual
+        end
+    | [] -> residual
+  in
+  let dependency_only_schedule residual =
+    set_path ["shared_scc_worklist_schedule"]
+      (`List [`Assoc [
+        "event", `String "enqueue";
+        "reason", `String "dependency-only";
+        "iteration", `Int 1;
+        "equation_id", `String "legacy-shared-scc-relabel";
+        "target", `String "legacy-shared-scc";
+      ]])
+      residual
   in
   let set_final_round_changed residual =
     let rounds = list_field "linked_cycle_rounds" residual in
@@ -853,6 +1139,8 @@ let negative_cases witnesses =
       (cycle_evidence_fails (set_path ["linked_cycle_scc_count"] (`Int 999)));
     false_case "cycle_missing_reverse_edge_rejected"
       (cycle_evidence_fails remove_reverse_cycle_edge);
+    false_case "cycle_missing_edge_provenance_rejected"
+      (cycle_evidence_fails (mutate_first_topology_edge ["stable_evidence_id"] (`String "")));
     false_case "cycle_empty_rounds_rejected"
       (cycle_evidence_fails (set_path ["linked_cycle_rounds"] (`List [])));
     false_case "cycle_non_stable_final_round_rejected"
@@ -875,12 +1163,26 @@ let negative_cases witnesses =
       (cycle_evidence_fails (set_path ["shared_scc_state_read_count"] (`Int 0)));
     false_case "cycle_missing_shared_scc_worklist_schedule_rejected"
       (cycle_evidence_fails (set_path ["shared_scc_worklist_schedule"] (`List [])));
+    false_case "cycle_dependency_only_schedule_rejected"
+      (cycle_evidence_fails dependency_only_schedule);
     false_case "cycle_shared_scc_final_cell_mismatch_rejected"
       (cycle_evidence_fails (mutate_first_shared_final_cell ["value"] (`Int 999)));
     false_case "cycle_observable_source_cell_mismatch_rejected"
       (cycle_evidence_fails (mutate_first_observable ["source_shared_scc_cell_id"] (`String "missing-cell")));
+    false_case "cycle_shared_scc_relabel_without_provenance_rejected"
+      (cycle_evidence_fails (mutate_first_imported_value ["stable_evidence_id"] (`String "")));
     false_case "cycle_bootstrap_derived_export_rejected"
       (cycle_evidence_fails (mutate_first_accepted_export ["derivation_source"] (`String "provider-stage2-output")));
+    false_case "callgraph_scheduler_missing_evidence_rejected"
+      (callgraph_scheduler_evidence_fails clear_scheduler_evidence);
+    false_case "callgraph_scheduler_missing_edge_provenance_rejected"
+      (callgraph_scheduler_evidence_fails scheduler_missing_required_edge_field);
+    false_case "callgraph_scheduler_scc_count_mismatch_rejected"
+      (callgraph_scheduler_evidence_fails scheduler_scc_count_mismatch);
+    false_case "callgraph_scheduler_dependency_only_relabel_rejected"
+      (callgraph_scheduler_evidence_fails scheduler_dependency_only_relabel);
+    false_case "old_shared_scc_topology_relabelled_callgraph_backed_rejected"
+      (callgraph_scheduler_evidence_fails old_topology_relabelled_without_provenance);
   ]
 
 let () =
@@ -913,6 +1215,7 @@ let () =
     "no_premerge_implementation_shortcut";
     "cyclic_residual_fixpoint_evidence";
     "cyclic_imported_value_exact_singleton_parity";
+    "callgraph_backed_scheduler_evidence";
   ] in
   let names = all_obligations |> List.map (string_field "name") in
   required |> List.iter (fun name -> expect (List.mem name names) ("missing obligation: " ^ name));
@@ -920,6 +1223,14 @@ let () =
     "at least one proof obligation failed";
   expect (negative_cases |> List.for_all (fun n -> string_field "status" n = "pass"))
     "at least one negative case was not covered";
+  let distinct_cycle_witness_present =
+    witness_reports
+    |> List.exists (fun w ->
+         string_field "witness_id" w <> "cycle_topology" &&
+         list_field "obligations" w
+         |> List.exists (fun o -> string_field "name" o = "cyclic_residual_fixpoint_evidence" && string_field "status" o = "pass"))
+  in
+  expect distinct_cycle_witness_present "missing distinct cyclic witness beyond cycle_topology";
   let suite_pass = witness_reports |> List.for_all (fun w -> string_field "status" w = "pass") in
   expect suite_pass "at least one full-Itv semantic relation failed";
   expect (witness_reports |> List.for_all (fun w -> bool_field "full_itv_required_fields_present" w))

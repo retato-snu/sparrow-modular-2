@@ -18,7 +18,16 @@ The linked analyzer is produced after each module has already passed through the
 - Stage 2 is solver-backed for the supported slice: staged residual cells are emitted as residual equations, the deterministic worklist solver propagates dynamic extern/link seeds, and reports distinguish `solver-backed-residual-fixpoint` from `component-overlay-legacy` evidence.
 - The solver-backed claim requires actual solver-state reads: a residual equation receives `residual_state_view -> stage2_input`, dependent equations read prior cells through the state view, and review/audit gates reject zero state reads, zero seed reads, missing exact cell dependencies, or overlay-only evidence.
 - Structural import/export obligations are derived from parsed CIL/global data retained in each stage-1 result. The linker does not accept manual import/export lists as the source of truth.
-- Cyclic linked function-import SCCs are supported for the checked witness slice by a shared SCC residual-equation layer: the linker discovers SCC topology, uses bootstrap/provider-derived runs only as scaffolding, lowers cyclic exports/imports/observable sink writes to shared solver cells, runs the existing residual worklist, and accepts cyclic values only when `source_shared_scc_cell_id` resolves through `shared_scc_final_cells`.
+- Cyclic linked function-import SCCs are supported for the checked witness slice
+  by a shared SCC residual-equation layer and a provenance-gated scheduling
+  contract: the linker discovers SCC topology, records scheduler edges with
+  stable ids, edge kind/source, and direct callgraph or residual call-binding
+  provenance when available, uses bootstrap/provider-derived runs only as
+  scaffolding, lowers cyclic exports/imports/observable sink writes to shared
+  solver cells, runs the existing residual worklist, and accepts cyclic values
+  only when `source_shared_scc_cell_id` resolves through
+  `shared_scc_final_cells`. Dependency-only schedules may be reported as
+  residual dependency scheduling, but not as callgraph-backed scheduling.
 - The first semantic milestone was return-focused; the current handoff uses
   `ExternalSummary v2`, a prototype/internal typed effect summary over selected
   Sparrow-Itv witnesses.  Provider stage-2 rows are summarized into typed
@@ -418,8 +427,8 @@ Not yet covered as general PE/linking semantics:
   cases;
 - full argument/return memory protocol across arbitrary calls;
 - context-sensitive call summaries;
-- recursion and callgraph cycles beyond the checked function-import SCC witness;
-  and
+- recursion and callgraph cycles beyond the checked, provenance-gated
+  function-import SCC witnesses; and
 - arbitrary provider/importer graphs whose effects are not expressible as the
   current return/global/pointer summaries.
 
@@ -494,11 +503,17 @@ artifact/API stability.
 ### Cyclic coverage
 
 The cyclic milestone is real but scoped.  Cyclic function-import SCCs are
-lowered to shared SCC residual equations/cells, solved by the worklist, and
-accepted only when `shared_scc_final_cells` source cyclic exports/imported
-observables with exact singleton parity.  This does not yet cover arbitrary
-cyclic C semantics such as global mutation cycles, pointer-alias cycles,
-recursive call/memory cycles, or nested loop-fixpoint plus module-link-fixpoint
+scheduled through a bounded residual cycle evidence layer, lowered to shared SCC
+residual equations/cells, solved by the worklist, and accepted only when
+`shared_scc_final_cells` source cyclic exports/imported observables with exact
+singleton parity.  A report may call this scheduling callgraph-backed only when
+each scheduler edge has stable edge identity, edge kind/source, and either
+direct program-callgraph provenance or residual call-binding provenance.
+Dependency-only topology is still useful compatibility evidence, but it must be
+downgraded to residual dependency scheduling instead of generalized
+callgraph-backed scheduling.  This does not yet cover arbitrary cyclic C
+semantics such as global mutation cycles, pointer-alias cycles, recursive
+call/memory cycles, or nested loop-fixpoint plus module-link-fixpoint
 interactions outside the checked witness universe.
 
 ### Coverage expansion rule
@@ -579,7 +594,22 @@ Negative-case coverage is represented in the report for mismatched values/effect
 
 ## Topology support after the oracle-suite milestone
 
-The residual linker now supports deterministic multiple import/provider bindings, mixed importer/provider role chains, and checked cyclic function-import SCCs.  Binding ambiguity still fails if one importer import has more than one candidate provider.  Acyclic mixed roles are scheduled by a dependency DAG over function bindings; cyclic SCCs additionally emit a shared residual-equation/worklist run whose artifact evidence records topology, per-round export/environment snapshots, changed-binding counts, shared SCC equation/cell/dependency ids, state reads, worklist schedule, `shared_scc_final_cells`, accepted export provenance, and exact singleton imported-observable parity.  The current cyclic proof obligation is deliberately scoped to the oracle-suite witness relation and recomputable emitted-equation evidence; it is not an arbitrary-C or full product-domain theorem.
+The residual linker now supports deterministic multiple import/provider
+bindings, mixed importer/provider role chains, and checked cyclic
+function-import SCCs.  Binding ambiguity still fails if one importer import has
+more than one candidate provider.  Acyclic mixed roles are scheduled by a
+dependency DAG over function bindings; cyclic SCCs additionally emit scheduler
+edge provenance, SCC/member/order evidence, and a shared
+residual-equation/worklist run whose artifact evidence records topology,
+per-round export/environment snapshots, changed-binding counts, shared SCC
+equation/cell/dependency ids, state reads, worklist schedule,
+`shared_scc_final_cells`, accepted export provenance, and exact singleton
+imported-observable parity.  Callgraph-backed wording is reserved for schedules
+whose emitted edges carry direct callgraph or residual call-binding provenance;
+dependency-only schedules are a residual dependency scheduler.  The current
+cyclic proof obligation is deliberately scoped to the oracle-suite witness
+relation and recomputable emitted-equation evidence; it is not an arbitrary-C
+or full product-domain theorem.
 
 Multiple extern roots are resolved by matching residual component provenance for the imported callee name, falling back to the singleton-root case for the original return-only witness.
 

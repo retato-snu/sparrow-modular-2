@@ -51,6 +51,7 @@ Oct/Taint semantics, or the full Sparrow product analyzer.
 | BTA/fact provenance reports | Implemented | `abstract_speculate_metaocaml_sparse.*.json` reports. |
 | Blind static-projection convergence guard | Implemented | Residual code growth is not used as the fixpoint convergence criterion. |
 | First residual-linking prototype | Implemented for bounded witnesses | `src/abstract_speculate_residual_linker.ml`, `@abstract_speculate_residual_linking_pe`. |
+| Checked cyclic residual scheduling | Implemented only for bounded function-import SCC witnesses with explicit scheduler provenance | `src/abstract_speculate_residual_linker.ml`, `@abstract_speculate_residual_linking_oracle_suite`; reports may call scheduling callgraph-backed only when every scheduler edge carries direct callgraph or residual call-binding provenance. |
 | Residual-linking oracle suite | Implemented as prototype full Sparrow-Itv evidence | `@abstract_speculate_residual_linking_oracle_suite`. |
 
 ## Not implemented / not claimed
@@ -62,7 +63,7 @@ Oct/Taint semantics, or the full Sparrow product analyzer.
 | Oct/Taint semantic preservation | The full relation is Itv-scoped only. | Product-domain claims require separate evidence and tests. |
 | Arbitrary-C semantic preservation | Fixtures and oracle-suite witnesses bound the evidence. | Current results are not a theorem for all C modules. |
 | General residual summary language | ExternalSummary v2 is prototype/internal and typed for selected return, global-write/read, and pointer-memory effects, but remains witness-bounded. | Broader linking still needs a general effect algebra beyond selected Sparrow-Itv witnesses. |
-| Cyclic residual linking | Mixed-role cycles are rejected. | Cycles require an explicit linked residual fixpoint semantics. |
+| General cyclic residual linking | Only checked function-import SCC witnesses are supported, and callgraph-backed scheduling is a provenance-gated report claim. Arbitrary recursive call/memory cycles, dependency-only schedules labeled as callgraph-backed, and cyclic effects outside the selected witnesses remain unsupported. | Broader cyclic linking still needs a general call/effect semantics plus oracle evidence beyond the current Sparrow-Itv witness slice. |
 | Whole-program residual global fixpoint | The residual linker does not rerun a global sparse fixpoint. | Needed for a stronger `link(PE(I,m),d)` equivalence claim. |
 | Full dynamic control residualization | Loop/branch shape witnesses exist, but statement-level dynamic control coverage is limited. | Needed for larger program classes. |
 | Mechanized proof | Verification is test/audit/oracle based, not proof-assistant mechanized. | Formal PL claims need a theorem statement and proof. |
@@ -100,13 +101,18 @@ the solver-state contract:
    residual-fixpoint claim.
 
 The strongest implementation statement remains `solve(E_m, d) ⊒ I(m⊕d)` for
-the checked witness universe.  Equality, arbitrary-C coverage, cyclic linked
-residual solving, and full product-domain Sparrow PE remain out of scope.
+the checked witness universe.  Equality, arbitrary-C coverage, general cyclic
+linked residual solving beyond the checked witness SCCs, and full
+product-domain Sparrow PE remain out of scope.
 
-It currently supports deterministic acyclic function
-bindings, including multiple provider/import bindings and a mixed importer /
-provider role chain.  It rejects ambiguous provider choices and cyclic mixed-role
-topologies.
+It currently supports deterministic acyclic function bindings, including
+multiple provider/import bindings and a mixed importer / provider role chain,
+plus checked cyclic function-import SCC witnesses.  Cyclic scheduling evidence
+is accepted as callgraph-backed only when the emitted scheduler edges include
+stable edge ids, edge kind/source, and direct callgraph or residual call-binding
+provenance.  Dependency-only edges may be scheduled for compatibility, but they
+must be reported as residual dependency scheduling rather than callgraph-backed
+scheduling.  Ambiguous provider choices still fail.
 
 The oracle-suite relation is now a witness-bounded full Sparrow-Itv relation:
 
@@ -167,9 +173,12 @@ make the current prototype easier to evaluate:
 2. keep the full Sparrow-Itv relation schema documented and prototype/non-public;
 3. replace the prototype selected-witness ExternalSummary v2 rules with a
    general typed effect algebra only after the witness-bounded contract is stable;
-4. continue factoring residual-linking scheduling into explicit acyclic dependency
-   graph evidence and keep the stage-2 residual solver as the primary runtime;
-5. keep cycles rejected until a linked residual fixpoint semantics is designed.
+4. continue factoring residual-linking scheduling into explicit dependency and
+   call-binding provenance evidence and keep the stage-2 residual solver as the
+   primary runtime;
+5. keep any broader cyclic call/memory semantics out of scope until the reports
+   and oracle suite can prove them with the same provenance and non-overclaim
+   gates.
 
 Only after that should the implementation broaden beyond the current ItvDom
 sparse-fixpoint slice.
