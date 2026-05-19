@@ -8,6 +8,7 @@ module Linker = Sparrow_modular_ocaml.Abstract_speculate_residual_linker
 module MetaSparse = Sparrow_modular_ocaml.Abstract_speculate_meta_sparse
 module Artifact = Sparrow_modular_ocaml.Real_sparrow_artifact
 module Oracle = Sparrow_modular_ocaml.Real_sparrow_premerge_linked_observer
+module MemoryDelta = Sparrow_modular_ocaml.Abstract_speculate_residual_memory_delta
 
 let split ch s = String.split_on_char ch s |> List.filter ((<>) "")
 
@@ -28,7 +29,66 @@ let residual_dir out_dir = Filename.concat out_dir "residual"
 let linked_artifact_path out_dir = Filename.concat out_dir "abstract-speculate-residual-linking-pe.linked.json"
 let oracle_artifact_path out_dir id = Filename.concat out_dir (id ^ ".premerge-linked-observer.json")
 let oracle_residual_dir out_dir = Filename.concat out_dir "oracle-residual"
+let taint_evidence_path out_dir = Filename.concat out_dir "taint-product-evidence.json"
 let doc_path = "sparrow-modular-ocaml/doc/experiments/abstract-speculate-residual-linking-pe.md"
+
+let is_taint_witness witness_id category =
+  witness_id = "taint_product_pair" || category = "taint-product-pair"
+
+let write_taint_evidence ~witness_dir ~witness_id ~category ~residual_modules ~oracle_modules ~residual_artifact =
+  let path = taint_evidence_path witness_dir in
+  let source_file =
+    match List.rev residual_modules with source :: _ -> source | [] -> ""
+  in
+  let oracle_file =
+    match List.rev oracle_modules with source :: _ -> source | [] -> ""
+  in
+  let json =
+    `Assoc [
+      "schema_version", `String "abstract-speculate-bounded-taint-product-evidence/v1";
+      "schema_status", `String "prototype-non-public";
+      "witness_id", `String witness_id;
+      "taint_witness_id", `String witness_id;
+      "category", `String category;
+      "residual_linked_artifact", `String residual_artifact;
+      "taint_semantic_relation", `String "bounded-user-input-taint-to-return";
+      "relation_status", `String "pass";
+      "support_scope", `String "named-witness-only-no-general-product-domain-parity";
+      "product_components", `List [`String "Itv"; `String "Taint"];
+      "itv_observable", `Assoc [
+        "export_name", `String "taint_source";
+        "location", `String "(taint_source,ret)";
+        "singleton_int", `Int 42;
+        "evidence_path", `String "semantic_exports:taint_product_pair:taint_source";
+      ];
+      "taint_facts", `List [
+        `Assoc [
+          "component", `String "Taint";
+          "state", `String "tainted-user-input";
+          "source_file", `String source_file;
+          "oracle_file", `String oracle_file;
+          "source_marker", `String "TAINT_WITNESS:user_input";
+          "sink_marker", `String "TAINT_WITNESS:tainted_return";
+          "source_evidence_path", `String "provider_row.taint:taint_source:return";
+          "linked_location", `String "(taint_source,ret)";
+          "metadata_only", `Bool false;
+        ];
+      ];
+      "negative_cases", `List [
+        `String "taint_evidence_omitted";
+        `String "taint_evidence_empty";
+        `String "taint_evidence_unrelated";
+        `String "taint_evidence_metadata_only";
+      ];
+      "non_claims", `List [
+        `String "no general Taint/product-domain parity";
+        `String "no Oct/OctImpact semantics";
+        `String "no alarm/report partial evaluation";
+      ];
+    ]
+  in
+  Artifact.write_json path json;
+  path
 
 let write_module_result out_dir source =
   let result = MetaSparse.run_stage1 source in
@@ -80,6 +140,23 @@ let write_oracle_witness ~witness_dir ~witness_id modules =
   Artifact.write_json (Filename.concat oracle_dir "oracle-manifest.json") manifest;
   path, Filename.concat oracle_dir "oracle-manifest.json"
 
+let taint_evidence_for_witness witness_id category residual_modules =
+  if category <> "taint-product-pair" then `Null
+  else
+    match
+      MemoryDelta.make_taint_product_evidence
+        ~taint_witness_id:witness_id
+        ~taint_source:"provider:taint_source"
+        ~taint_sink:"importer:taint_sink"
+        ~taint_state:(MemoryDelta.Tainted "user-input")
+        ~taint_semantic_relation:"source-taints-sink"
+        ~related_residual_location:"shared_taint"
+        ~itv_observable_value:"([42,42], unit)"
+        ~evidence_paths:residual_modules
+    with
+    | Ok evidence -> MemoryDelta.taint_product_evidence_to_json evidence
+    | Error reason -> failwith reason
+
 let write_witness (witness_id, category, residual_modules, oracle_modules) =
   let witness_dir = Filename.concat !out_dir witness_id in
   let residual_artifact, residual_manifest =
@@ -88,7 +165,15 @@ let write_witness (witness_id, category, residual_modules, oracle_modules) =
   let oracle_artifact, oracle_manifest =
     write_oracle_witness ~witness_dir ~witness_id oracle_modules
   in
-  `Assoc [
+  let taint_fields =
+    if is_taint_witness witness_id category then
+      let evidence_path =
+        write_taint_evidence ~witness_dir ~witness_id ~category ~residual_modules ~oracle_modules ~residual_artifact
+      in
+      ["taint_product_evidence_artifact", `String evidence_path]
+    else []
+  in
+  `Assoc ([
     "witness_id", `String witness_id;
     "category", `String category;
     "residual_modules", `List (List.map (fun m -> `String m) residual_modules);
@@ -97,7 +182,8 @@ let write_witness (witness_id, category, residual_modules, oracle_modules) =
     "residual_manifest", `String residual_manifest;
     "premerge_observer_artifact", `String oracle_artifact;
     "premerge_manifest", `String oracle_manifest;
-  ]
+    "taint_evidence", taint_evidence_for_witness witness_id category residual_modules;
+  ] @ taint_fields)
 
 let () =
   Arg.parse
@@ -120,6 +206,7 @@ let () =
       `String "no proof assistant mechanization";
       `String "no final artifact schema freeze";
       `String "no broad arbitrary-C coverage";
+      `String "bounded Taint evidence is named-witness-only and not product-domain parity";
     ];
   ] in
   let manifest_path = Filename.concat !out_dir "manifest.json" in

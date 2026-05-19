@@ -71,8 +71,9 @@ Use this focused checklist when validating changes for
 5. Review negative evidence for value, location, provider hash, effect id, and
    metadata mismatch rejection; the oracle relation should surface
    `typed_scalar_protocol_mismatch` for scalar protocol violations.
-6. Reconfirm non-goals: no Oct/Taint semantics, no broad call-graph rewrite, no
-   proof-system expansion, and no fixture-only proof.
+6. Reconfirm non-goals: no Oct semantics, no general Taint/product-domain
+   parity beyond named bounded product evidence, no broad call-graph rewrite,
+   no proof-system expansion, and no fixture-only proof.
 
 ## Fresh Task 4 evidence
 

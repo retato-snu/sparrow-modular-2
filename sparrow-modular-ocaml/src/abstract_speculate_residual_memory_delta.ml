@@ -6,6 +6,8 @@ module Cell = Abstract_speculate_itv_residual_cell
 
 let external_summary_schema_id = "abstract-speculate-external-summary/v3"
 let memory_delta_schema_id = "abstract-speculate-external-summary-memory-delta/v3"
+let taint_protocol_schema_id = "abstract-speculate-taint-product-component/v1"
+let product_pair_schema_id = "abstract-speculate-itv-taint-product-pair/v1"
 let summary_api_status = "prototype-internal"
 let witness_scope = "selected-sparrow-itv"
 
@@ -15,9 +17,29 @@ let relation_failure_reasons = [
   "memory_delta_value_transition_mismatch";
   "memory_delta_provenance_mismatch";
   "memory_delta_chain_missing";
+  "taint_product_schema_mismatch";
+  "taint_product_component_mismatch";
+  "taint_product_relation_mismatch";
+  "taint_product_chain_missing";
 ]
 
-type memory_domain = Global_write_read | Pointer_memory_effect
+let taint_product_schema_id = "abstract-speculate-taint-product-evidence/v1"
+
+type memory_domain = Global_write_read | Pointer_memory_effect | Taint_product_component
+
+type taint_state = Taint_bottom | Untainted | Tainted of string
+
+type taint_product_evidence = {
+  taint_witness_id : string;
+  taint_source : string;
+  taint_sink : string;
+  taint_state : taint_state;
+  taint_semantic_relation : string;
+  related_residual_location : string;
+  itv_observable_value : string;
+  evidence_paths : string list;
+  taint_chain_id : string;
+}
 
 type memory_location = {
   domain : memory_domain;
@@ -79,19 +101,155 @@ let contains s sub =
   let rec loop i = i + sub_len <= len && (String.sub s i sub_len = sub || loop (i + 1)) in
   sub_len = 0 || loop 0
 
+let bounded_taint_component_schema_id = "bounded-taint-product-component/v1"
+
 let domain_to_string = function
   | Global_write_read -> "global-write-read"
   | Pointer_memory_effect -> "pointer-memory-effect"
+  | Taint_product_component -> "Taint"
 
 let domain_of_string = function
   | "global-write-read" -> Ok Global_write_read
   | "pointer-memory-effect" -> Ok Pointer_memory_effect
-  | "Oct" | "oct" | "Taint" | "taint" -> Error "unsupported memory delta domain: Oct/Taint"
+  | "Taint" | "taint" | "bounded-taint-product-component" ->
+      Error "Taint is a bounded product component, not a memory delta domain"
+  | "Oct" | "oct" -> Error "unsupported memory delta domain: Oct"
   | other -> Error ("unsupported memory delta domain: " ^ other)
+
+let taint_state_to_string = function
+  | Taint_bottom -> "bottom"
+  | Untainted -> "untainted"
+  | Tainted source -> "tainted:" ^ source
+
+let taint_state_of_string = function
+  | "bottom" -> Ok Taint_bottom
+  | "untainted" -> Ok Untainted
+  | s when starts_with s "tainted:" && String.length s > String.length "tainted:" ->
+      Ok (Tainted (String.sub s (String.length "tainted:") (String.length s - String.length "tainted:")))
+  | other -> Error ("unsupported taint state: " ^ other)
 
 let canonical_value_json value = Cell.canonical_value_json_of_legacy_string value
 
+let make_taint_component_json
+    ~witness_id
+    ~symbol
+    ~location
+    ~taint_state
+    ~source_evidence_path
+    ~related_effect_id =
+  `Assoc [
+    "taint_protocol_schema", `String taint_protocol_schema_id;
+    "domain", `String "Taint";
+    "witness_scope", `String witness_scope;
+    "taint_witness_id", `String witness_id;
+    "symbol", `String symbol;
+    "location", `String location;
+    "taint_state", `String taint_state;
+    "semantic_relation", `String "provider-return-taint-flow";
+    "source_evidence_path", `String source_evidence_path;
+    "related_effect_id", `String related_effect_id;
+    "metadata_only", `Bool false;
+  ]
+
+let make_product_pair_evidence_json ~witness_id ~itv_value ~taint_component =
+  `Assoc [
+    "product_pair_schema", `String product_pair_schema_id;
+    "witness_scope", `String witness_scope;
+    "taint_witness_id", `String witness_id;
+    "product_components", `List [`String "Itv"; `String "Taint"];
+    "itv_component", `Assoc [
+      "domain", `String "Itv";
+      "value", `String itv_value;
+      "canonical_value", canonical_value_json itv_value;
+    ];
+    "taint_component", taint_component;
+    "taint_semantic_relation", `String "provider-return-taint-flow";
+    "semantic_relation_status", `String "pass";
+    "negative_case_contract", `List [
+      `String "taint evidence omitted";
+      `String "taint evidence empty";
+      `String "taint evidence unrelated to return effect";
+      `String "taint evidence metadata-only";
+    ];
+  ]
+
 let deterministic_hash fields = String.concat ":" fields
+
+let make_taint_product_evidence
+    ~taint_witness_id
+    ~taint_source
+    ~taint_sink
+    ~taint_state
+    ~taint_semantic_relation
+    ~related_residual_location
+    ~itv_observable_value
+    ~evidence_paths =
+  if taint_witness_id = "" then Error "taint_witness_id is required"
+  else if taint_source = "" then Error "taint_source is required"
+  else if taint_sink = "" then Error "taint_sink is required"
+  else if taint_semantic_relation = "" then Error "taint_semantic_relation is required"
+  else if related_residual_location = "" then Error "related_residual_location is required"
+  else if itv_observable_value = "" then Error "itv_observable_value is required"
+  else if evidence_paths = [] then Error "evidence_paths is required"
+  else
+    let taint_chain_id =
+      deterministic_hash ["taint-product-chain"; taint_witness_id; taint_source; taint_sink; related_residual_location]
+    in
+    Ok {
+      taint_witness_id; taint_source; taint_sink; taint_state; taint_semantic_relation;
+      related_residual_location; itv_observable_value; evidence_paths; taint_chain_id;
+    }
+
+let taint_chain_json evidence = [
+  `Assoc [
+    "index", `Int 0;
+    "role", `String "source";
+    "location", `String evidence.taint_source;
+    "taint_state", `String (taint_state_to_string evidence.taint_state);
+    "chain_id", `String evidence.taint_chain_id;
+  ];
+  `Assoc [
+    "index", `Int 1;
+    "role", `String "linker";
+    "location", `String evidence.related_residual_location;
+    "taint_state", `String (taint_state_to_string evidence.taint_state);
+    "chain_id", `String evidence.taint_chain_id;
+  ];
+  `Assoc [
+    "index", `Int 2;
+    "role", `String "sink";
+    "location", `String evidence.taint_sink;
+    "taint_state", `String (taint_state_to_string evidence.taint_state);
+    "chain_id", `String evidence.taint_chain_id;
+  ];
+]
+
+let taint_product_evidence_to_json evidence =
+  `Assoc [
+    "taint_product_schema", `String taint_product_schema_id;
+    "taint_witness_id", `String evidence.taint_witness_id;
+    "taint_semantic_relation", `String evidence.taint_semantic_relation;
+    "product_components", `List [`String "Itv"; `String "Taint"];
+    "taint_source", `String evidence.taint_source;
+    "taint_sink", `String evidence.taint_sink;
+    "taint_state", `String (taint_state_to_string evidence.taint_state);
+    "related_residual_location", `String evidence.related_residual_location;
+    "itv_observable", `Assoc [
+      "location", `String evidence.related_residual_location;
+      "value", `String evidence.itv_observable_value;
+      "component", `String "Itv";
+    ];
+    "metadata_only", `Bool false;
+    "evidence_paths", `List (List.map (fun path -> `String path) evidence.evidence_paths);
+    "taint_chain_id", `String evidence.taint_chain_id;
+    "taint_chain", `List (taint_chain_json evidence);
+    "bounded_support", `String "named-witness-only";
+    "non_claims", `List [
+      `String "no general Taint domain parity";
+      `String "no Oct or OctImpact semantics";
+      `String "no alarm/report PE";
+    ];
+  ]
 
 let make_provider_delta
     ~provider_module
@@ -115,7 +273,7 @@ let make_provider_delta
   else
     let domain_s = domain_to_string domain in
     let normalized_location = summary_location in
-    let alias_key = match domain with Pointer_memory_effect -> Some summary_location | Global_write_read -> None in
+    let alias_key = match domain with Pointer_memory_effect -> Some summary_location | Global_write_read | Taint_product_component -> None in
     let delta_id = deterministic_hash [provider_module; export_name; domain_s; normalized_location] in
     let chain_id = deterministic_hash ["memory-delta-chain"; provider_module; provider_source_hash; export_name; domain_s; raw_location; normalized_location] in
     let chain_hash = deterministic_hash [chain_id; provider_artifact_path; string_of_int provider_phase_index; value] in
@@ -194,8 +352,27 @@ let roles_json =
     "linker", `String "chain-observer";
   ]
 
+let taint_state_of_value value =
+  match String.trim value with
+  | "tainted" | "tainted-user-input" | "user-input" -> Some "tainted-user-input"
+  | "untainted" | "untainted-bottom" | "bottom" -> Some "untainted-bottom"
+  | _ -> None
+
+let taint_component_fields d =
+  match d.location.domain with
+  | Taint_product_component ->
+      let state = match taint_state_of_value d.transition.write_value with Some s -> s | None -> d.transition.write_value in
+      [
+        "taint_component_schema", `String bounded_taint_component_schema_id;
+        "taint_state", `String state;
+        "taint_semantic_relation", `String "bounded-user-input-taint-component";
+        "product_components", `List [`String "Itv"; `String "Taint"];
+        "taint_support_scope", `String "named-witness-only-no-general-product-domain-parity";
+      ]
+  | Global_write_read | Pointer_memory_effect -> []
+
 let delta_to_json d =
-  `Assoc [
+  `Assoc ([
     "memory_delta_schema", `String memory_delta_schema_id;
     "delta_id", `String d.delta_id;
     "domain", `String (domain_to_string d.location.domain);
@@ -224,8 +401,8 @@ let delta_to_json d =
     "chain_hash", `String d.chain_hash;
     "delta_chain", `List (delta_chain_json d);
     "witness_scope", `String witness_scope;
-    "excluded_domains", `List [`String "Oct"; `String "Taint"];
-  ]
+    "excluded_domains", `List [`String "Oct"];
+  ] @ taint_component_fields d)
 
 let compatibility_effect_json d =
   `Assoc [
@@ -259,6 +436,57 @@ let validation_result_json result =
 
 let add cond reason reasons = if cond then reasons else reason :: reasons
 
+let string_list_field name json =
+  list_field name json
+  |> List.filter_map (function `String s -> Some s | _ -> None)
+
+let supported_taint_state = function
+  | "bottom" | "untainted" | "tainted-user-input" -> true
+  | _ -> false
+
+let validate_taint_component_json component =
+  let reasons =
+    []
+    |> add (string_field "taint_protocol_schema" component = taint_protocol_schema_id)
+         "taint_component_schema_mismatch"
+    |> add (string_field "domain" component = "Taint") "taint_component_schema_mismatch"
+    |> add (string_field "witness_scope" component = witness_scope) "taint_component_schema_mismatch"
+    |> add (string_field "taint_witness_id" component <> "") "taint_component_missing_semantic_binding"
+    |> add (string_field "symbol" component <> "") "taint_component_missing_semantic_binding"
+    |> add (string_field "location" component <> "") "taint_component_missing_semantic_binding"
+    |> add (string_field "source_evidence_path" component <> "") "taint_component_missing_semantic_binding"
+    |> add (string_field "related_effect_id" component <> "") "taint_component_missing_semantic_binding"
+    |> add (string_field "semantic_relation" component = "provider-return-taint-flow")
+         "taint_component_missing_semantic_binding"
+    |> add (supported_taint_state (string_field "taint_state" component))
+         "taint_component_unsupported_state"
+    |> add (not (bool_field "metadata_only" component)) "taint_component_metadata_only"
+  in
+  match List.rev reasons with [] -> Ok () | rs -> Error rs
+
+let validate_product_pair_evidence_json evidence =
+  let taint_component = match assoc_field "taint_component" evidence with Some json -> json | None -> `Null in
+  let components = string_list_field "product_components" evidence in
+  let taint_reasons = validation_reasons (validate_taint_component_json taint_component) in
+  let pair_witness = string_field "taint_witness_id" evidence in
+  let taint_witness = string_field "taint_witness_id" taint_component in
+  let reasons =
+    taint_reasons
+    |> add (string_field "product_pair_schema" evidence = product_pair_schema_id)
+         "product_pair_schema_mismatch"
+    |> add (string_field "witness_scope" evidence = witness_scope) "product_pair_schema_mismatch"
+    |> add (List.mem "Itv" components && List.mem "Taint" components)
+         "product_pair_missing_component"
+    |> add (pair_witness <> "" && pair_witness = taint_witness)
+         "product_pair_missing_component"
+    |> add (assoc_field "itv_component" evidence <> None) "product_pair_missing_component"
+    |> add (string_field "taint_semantic_relation" evidence = "provider-return-taint-flow")
+         "product_pair_semantic_relation_mismatch"
+    |> add (string_field "semantic_relation_status" evidence = "pass")
+         "product_pair_semantic_relation_mismatch"
+  in
+  match List.rev reasons with [] -> Ok () | rs -> Error rs
+
 let validate_chain delta chain =
   let entries = match chain with `List xs -> xs | _ -> [] in
   let has_role role = List.exists (fun entry -> string_field "role" entry = role) entries in
@@ -275,17 +503,20 @@ let validate_delta_json delta =
   let normalized_location = string_field "normalized_location" delta in
   let domain = string_field "domain" delta in
   let source_path = string_field "source_evidence_path" delta in
-  let expected_prefix = "provider_row.memory:" in
+  let memory_prefix = "provider_row.memory:" in
+  let taint_prefix = "provider_row.taint:" in
   let source_location =
-    if starts_with source_path expected_prefix then
-      String.sub source_path (String.length expected_prefix) (String.length source_path - String.length expected_prefix)
+    if starts_with source_path memory_prefix then
+      String.sub source_path (String.length memory_prefix) (String.length source_path - String.length memory_prefix)
+    else if starts_with source_path taint_prefix then
+      String.sub source_path (String.length taint_prefix) (String.length source_path - String.length taint_prefix)
     else ""
   in
   let reasons = validate_chain delta (match assoc_field "delta_chain" delta with Some c -> c | None -> `Null) in
   let reasons =
     reasons
     |> add (string_field "memory_delta_schema" delta = memory_delta_schema_id) "memory_delta_schema_mismatch"
-    |> add (domain = "global-write-read" || domain = "pointer-memory-effect") "memory_delta_unsupported_domain"
+    |> add (domain = "global-write-read" || domain = "pointer-memory-effect" || domain = "Taint") "memory_delta_unsupported_domain"
     |> add (string_field "delta_id" delta <> "") "memory_delta_missing_id"
     |> add (string_field "reader_role" delta = "reader") "memory_delta_role_mismatch"
     |> add (string_field "writer_role" delta = "writer") "memory_delta_role_mismatch"
@@ -314,7 +545,53 @@ let validate_delta_json delta =
         reasons
         |> add (string_field "alias_key" delta = location || assoc_field "alias_key" delta <> Some `Null) "memory_delta_location_mismatch"
         |> add (contains location ",") "memory_delta_location_mismatch"
+    | "Taint" ->
+        reasons
+        |> add (assoc_field "alias_key" delta = Some `Null) "memory_delta_location_mismatch"
+        |> add (string_field "taint_component_schema" delta = bounded_taint_component_schema_id) "taint_component_schema_mismatch"
+        |> add (List.mem (string_field "taint_state" delta) ["tainted-user-input"; "untainted-bottom"]) "taint_component_state_mismatch"
+        |> add (string_field "taint_semantic_relation" delta = "bounded-user-input-taint-component") "taint_component_relation_mismatch"
+        |> add (List.mem (`String "Taint") (list_field "product_components" delta)) "taint_component_product_mismatch"
+        |> add (starts_with source_path "provider_row.taint:") "memory_delta_location_mismatch"
+        |> add (source_location = raw_location) "memory_delta_location_mismatch"
     | _ -> reasons
+  in
+  match List.rev reasons with [] -> Ok () | rs -> Error rs
+
+let validate_taint_chain evidence chain =
+  let entries = match chain with `List xs -> xs | _ -> [] in
+  let has_role role = List.exists (fun entry -> string_field "role" entry = role) entries in
+  []
+  |> add (entries <> []) "taint_product_chain_missing"
+  |> add (List.length entries >= 3) "taint_product_chain_missing"
+  |> add (has_role "source" && has_role "linker" && has_role "sink") "taint_product_relation_mismatch"
+  |> add (List.for_all (fun entry -> string_field "chain_id" entry = string_field "taint_chain_id" evidence) entries) "taint_product_chain_missing"
+
+let validate_taint_product_evidence_json evidence =
+  let product_components =
+    list_field "product_components" evidence
+    |> List.filter_map (function `String s -> Some s | _ -> None)
+  in
+  let relation = string_field "taint_semantic_relation" evidence in
+  let state = string_field "taint_state" evidence in
+  let itv = match assoc_field "itv_observable" evidence with Some x -> x | None -> `Null in
+  let chain_reasons = validate_taint_chain evidence (match assoc_field "taint_chain" evidence with Some c -> c | None -> `Null) in
+  let state_ok = match taint_state_of_string state with Ok _ -> true | Error _ -> false in
+  let reasons = chain_reasons in
+  let reasons =
+    reasons
+    |> add (string_field "taint_product_schema" evidence = taint_product_schema_id) "taint_product_schema_mismatch"
+    |> add (string_field "taint_witness_id" evidence <> "") "taint_product_schema_mismatch"
+    |> add (List.mem "Itv" product_components && List.mem "Taint" product_components) "taint_product_component_mismatch"
+    |> add (relation = "source-taints-sink" || relation = "untainted-preserved") "taint_product_relation_mismatch"
+    |> add state_ok "taint_product_relation_mismatch"
+    |> add (string_field "taint_source" evidence <> "" && string_field "taint_sink" evidence <> "") "taint_product_relation_mismatch"
+    |> add (string_field "related_residual_location" evidence <> "") "taint_product_relation_mismatch"
+    |> add (string_field "location" itv = string_field "related_residual_location" evidence) "taint_product_component_mismatch"
+    |> add (string_field "value" itv <> "") "taint_product_component_mismatch"
+    |> add (not (bool_field "metadata_only" evidence)) "taint_product_relation_mismatch"
+    |> add (list_field "evidence_paths" evidence <> []) "taint_product_schema_mismatch"
+    |> add (string_field "taint_chain_id" evidence <> "") "taint_product_chain_missing"
   in
   match List.rev reasons with [] -> Ok () | rs -> Error rs
 

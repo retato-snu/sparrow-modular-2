@@ -49,6 +49,88 @@ let project_path rel =
     if String.length rel > prefix_len && String.sub rel 0 prefix_len = prefix then
       Filename.concat !repo_root (String.sub rel prefix_len (String.length rel - prefix_len))
     else direct
+
+let fixture_source_path rel =
+  if Sys.file_exists rel then rel
+  else
+    let local_test = Filename.concat "test" rel in
+    if Sys.file_exists local_test then local_test
+    else
+      let direct = Filename.concat !repo_root rel in
+      if Sys.file_exists direct then direct
+      else
+        let repo_test = Filename.concat (Filename.concat !repo_root "test") rel in
+        if Sys.file_exists repo_test then repo_test
+        else Filename.concat (Filename.concat !repo_root "sparrow-modular-ocaml/test") rel
+
+let is_taint_witness_id witness_id category =
+  witness_id = "taint_product_pair" || category = "taint-product-pair"
+
+let json_string_list field json =
+  list_field field json
+  |> List.filter_map (function `String s -> Some s | _ -> None)
+
+let source_contains_marker source marker =
+  source <> "" && marker <> "" &&
+  (let path = fixture_source_path source in
+   Sys.file_exists path && contains (read_file path) marker)
+
+let semantic_export_return residual export_name =
+  list_field "semantic_exports" residual
+  |> List.find_map (fun export ->
+       if string_field "export_name" export = export_name then Some (int_field "return_value" export)
+       else None)
+
+let taint_evidence_json_ok witness residual evidence =
+  let witness_id = string_field "witness_id" witness in
+  let product_components = json_string_list "product_components" evidence in
+  let facts = list_field "taint_facts" evidence in
+  let itv = member "itv_observable" evidence in
+  let export_name = string_field "export_name" itv in
+  let singleton = int_field "singleton_int" itv in
+  let fact_ok =
+    facts |> List.exists (fun fact ->
+      string_field "component" fact = "Taint" &&
+      string_field "state" fact = "tainted-user-input" &&
+      string_field "source_evidence_path" fact = "provider_row.taint:taint_source:return" &&
+      not (bool_field "metadata_only" fact) &&
+      contains (string_field "source_file" fact) "taint_product_pair/provider.c" &&
+      string_field "source_marker" fact = "TAINT_WITNESS:user_input" &&
+      string_field "sink_marker" fact = "TAINT_WITNESS:tainted_return")
+  in
+  string_field "schema_version" evidence = "abstract-speculate-bounded-taint-product-evidence/v1" &&
+  string_field "schema_status" evidence = "prototype-non-public" &&
+  string_field "witness_id" evidence = witness_id &&
+  string_field "taint_witness_id" evidence = witness_id &&
+  string_field "residual_linked_artifact" evidence = string_field "residual_linked_artifact" witness &&
+  string_field "taint_semantic_relation" evidence = "bounded-user-input-taint-to-return" &&
+  string_field "relation_status" evidence = "pass" &&
+  List.mem "Itv" product_components && List.mem "Taint" product_components &&
+  facts <> [] && fact_ok &&
+  export_name = "taint_source" &&
+  singleton = 42 &&
+  semantic_export_return residual export_name = Some singleton
+
+let taint_evidence_for_witness witness residual =
+  let witness_id = string_field "witness_id" witness in
+  let category = string_field "category" witness in
+  if not (is_taint_witness_id witness_id category) then
+    `Assoc ["status", `String "not-applicable"]
+  else
+    let path = string_field "taint_product_evidence_artifact" witness in
+    if path = "" || not (Sys.file_exists path) then
+      `Assoc ["status", `String "fail"; "reason", `String "missing_taint_product_evidence_artifact"]
+    else
+      let evidence = Yojson.Safe.from_file path in
+      let ok = taint_evidence_json_ok witness residual evidence in
+      `Assoc [
+        "status", `String (if ok then "pass" else "fail");
+        "taint_witness_id", `String witness_id;
+        "artifact", `String path;
+        "taint_semantic_relation", `String (string_field "taint_semantic_relation" evidence);
+        "product_components", (match assoc_field "product_components" evidence with Some x -> x | None -> `List []);
+        "evidence", evidence;
+      ]
 let semantic_exports linked = list_field "semantic_exports" linked
 
 let provider_memory summary =
@@ -143,6 +225,23 @@ let memory_effect_ok summary expected_domain eff =
       starts_with (string_field "effect_id" eff) (string_field "provider_module" eff ^ ":") &&
       contains (string_field "effect_id" eff) (expected_domain ^ ":" ^ string_field "location" eff)
 
+let effect_ids summary =
+  list_field "return_effects" summary
+  |> List.map (string_field "effect_id")
+  |> List.filter ((<>) "")
+
+let taint_component_ok summary component =
+  MemoryDelta.validation_ok (MemoryDelta.validate_taint_component_json component) &&
+  List.mem (string_field "related_effect_id" component) (effect_ids summary)
+
+let product_pair_ok summary evidence =
+  let component = member "taint_component" evidence in
+  MemoryDelta.validation_ok (MemoryDelta.validate_product_pair_evidence_json evidence) &&
+  taint_component_ok summary component &&
+  string_field "related_effect_id" component <> "" &&
+  (list_field "return_effects" summary
+   |> List.exists (fun eff -> string_field "effect_id" eff = string_field "related_effect_id" component))
+
 let external_summary_ok summary =
   let has_memory_projection =
     list_field "global_effects" summary <> [] || list_field "pointer_effects" summary <> []
@@ -173,6 +272,8 @@ let external_summary_ok summary =
   memory_delta_authority_ok &&
   List.for_all (memory_effect_ok summary "global-write-read") (list_field "global_effects" summary) &&
   List.for_all (memory_effect_ok summary "pointer-memory-effect") (list_field "pointer_effects" summary) &&
+  List.for_all (taint_component_ok summary) (list_field "taint_components" summary) &&
+  List.for_all (product_pair_ok summary) (list_field "product_pair_evidence" summary) &&
   member "external_summary_v1_compat" summary <> `Null &&
   string_field "schema_version" (member "external_summary_v1_compat" summary) =
     "abstract-speculate-external-summary/v1" &&
@@ -189,8 +290,57 @@ let has_effect domain summaries =
        in
        list_field field summary <> [])
 
+let has_taint_product_pair summaries =
+  summaries
+  |> List.exists (fun summary ->
+       list_field "taint_components" summary <> [] &&
+       list_field "product_pair_evidence" summary <> [] &&
+       list_field "product_pair_evidence" summary
+       |> List.exists (fun evidence ->
+            string_field "taint_witness_id" evidence = "taint_product_pair" &&
+            string_field "semantic_relation_status" evidence = "pass"))
+
 let effect_count field summaries =
   List.fold_left (fun acc summary -> acc + List.length (list_field field summary)) 0 summaries
+
+let json_contains json needle = contains (Yojson.Safe.to_string json) needle
+
+let taint_product_witness_required witness_id category =
+  witness_id = "taint_product_pair" || category = "taint-product-pair"
+
+let taint_product_evidence_ok residual evidence =
+  MemoryDelta.validation_ok (MemoryDelta.validate_taint_product_evidence_json evidence) &&
+  string_field "taint_witness_id" evidence <> "" &&
+  string_field "taint_semantic_relation" evidence = "source-taints-sink" &&
+  json_contains residual (string_field "related_residual_location" evidence) &&
+  begin match assoc_field "itv_observable" evidence with
+  | Some itv -> json_contains residual (string_field "location" itv)
+  | None -> false
+  end
+
+let taint_product_obligations witness_id category residual witness =
+  if not (taint_product_witness_required witness_id category) then []
+  else
+    let evidence = match assoc_field "taint_evidence" witness with Some e -> e | None -> `Null in
+    let validation = MemoryDelta.validate_taint_product_evidence_json evidence in
+    let residual_tied =
+      string_field "related_residual_location" evidence <> "" &&
+      json_contains residual (string_field "related_residual_location" evidence)
+    in
+    let pass = MemoryDelta.validation_ok validation && residual_tied in
+    [`Assoc [
+      "name", `String "taint_product_pair_semantic_evidence";
+      "category", `String "taint-product-pair";
+      "witness_id", `String witness_id;
+      "status", `String (if pass then "pass" else "fail");
+      "taint_witness_id", `String (string_field "taint_witness_id" evidence);
+      "taint_semantic_relation", `String (string_field "taint_semantic_relation" evidence);
+      "product_components", (match assoc_field "product_components" evidence with Some xs -> xs | None -> `List []);
+      "related_residual_location", `String (string_field "related_residual_location" evidence);
+      "validation", MemoryDelta.validation_result_json validation;
+      "residual_tied", `Bool residual_tied;
+      "evidence_source", `String "bounded taint product evidence attached to oracle-suite witness manifest";
+    ]]
 
 let require_external_summaries witness_id residual =
   let summaries = list_field "external_summaries" residual in
@@ -202,7 +352,10 @@ let require_external_summaries witness_id residual =
       (witness_id ^ ": missing v3 global delta");
   if witness_id = "pointer_memory_effect" then
     expect (has_effect "pointer-memory-effect" summaries)
-      (witness_id ^ ": missing v3 pointer delta")
+      (witness_id ^ ": missing v3 pointer delta");
+  if witness_id = "taint_product_pair" then
+    expect (has_taint_product_pair summaries)
+      (witness_id ^ ": missing bounded Itv+Taint product-pair evidence")
 
 let source_guard_obligation_for_paths witness_id residual_sources suite_sources =
   let forbidden = ["Real_sparrow_frontend." ^ "global_for_" ^ "files"; "Mergecil." ^ "merge"; "real_sparrow_" ^ "premerge_linked_observer"] in
@@ -332,12 +485,14 @@ let imported_cyclic_values_exact residual =
          bool_field "no_extra_imprecision" value &&
          bool_field "shared_scc_value_matches" value &&
          bool_field "observable_sink_dependency_present" value &&
+         provenance_fields_present ~edge_kind:"shared-scc-import-copy" value &&
          source_cell_matches_final residual value &&
          list_field "observable_values" value <> [] &&
          List.for_all (observable_value_matches_final residual)
            (list_field "observable_values" value))
   in
   values <> [] &&
+  List.for_all (provenance_fields_present ~edge_kind:"shared-scc-import-copy") values &&
   bool_field "cyclic_imported_value_exact_singleton_parity" residual &&
   bool_field "cycle_final_values_derive_from_shared_scc_final_cells" residual &&
   List.for_all value_has_edge (cyclic_topology_edges residual)
@@ -429,6 +584,7 @@ let recomputed_cycle_evidence_passes residual =
   topology <> [] &&
   rounds <> [] &&
   changed_counts = reported_changed_counts &&
+  cycle_topology_edge_provenance_passes topology &&
   cyclic_topology_edges_have_cycle residual &&
   last_round_stable &&
   shared_scc_solver_evidence_passes residual
@@ -611,10 +767,18 @@ let witness_report witness =
     (witness_id ^ ": oracle artifact identity mismatch");
   require_external_summaries witness_id residual;
   let summaries = list_field "external_summaries" residual in
-  let obligations = obligations_for witness_id category residual oracle @ cycle_evidence_obligations witness_id category residual in
+  let obligations =
+    obligations_for witness_id category residual oracle @
+    cycle_evidence_obligations witness_id category residual @
+    taint_product_obligations witness_id category residual witness
+  in
   let residual_obs, oracle_obs = normalized_observations witness_id residual oracle in
   let selected_relation = Relation.selected_observation_relation_json ~witness_id ~residual ~oracle in
   let full_itv_relation = Relation.full_itv_semantic_relation_json ~witness_id ~residual ~oracle in
+  let taint_product_evidence = taint_evidence_for_witness witness residual in
+  let taint_required = is_taint_witness_id witness_id category in
+  let taint_pass = (not taint_required) || string_field "status" taint_product_evidence = "pass" in
+  expect taint_pass (witness_id ^ ": required bounded Taint product evidence did not pass");
   let required_full_itv_fields = [
     "semantic_universe_manifest";
     "failure_taxonomy";
@@ -626,9 +790,12 @@ let witness_report witness =
   let required_full_itv_fields_present =
     required_full_itv_fields |> List.for_all (fun field -> has_field field full_itv_relation)
   in
+  let taint_evidence = match assoc_field "taint_evidence" witness with Some e -> e | None -> `Null in
   let pass = witness_pass_status obligations residual_obs oracle_obs &&
              string_field "status" full_itv_relation = "pass" &&
-             required_full_itv_fields_present in
+             required_full_itv_fields_present &&
+             taint_pass &&
+             (not (taint_product_witness_required witness_id category) || taint_product_evidence_ok residual taint_evidence) in
   `Assoc [
     "witness_id", `String witness_id;
     "category", `String category;
@@ -637,12 +804,21 @@ let witness_report witness =
     "premerge_observer_artifact", `String oracle_path;
     "external_summary_v3_checked", `Bool true;
     "external_summary_v1_compat_non_authoritative", `Bool true;
+    "taint_product_evidence", taint_product_evidence;
+    "taint_semantic_relation", member "taint_semantic_relation" taint_product_evidence;
+    "taint_witness_id", member "taint_witness_id" taint_product_evidence;
+    "product_components", member "product_components" taint_product_evidence;
     "external_summary_effect_counts", `Assoc [
       "summary_count", `Int (List.length summaries);
       "return_effect_count", `Int (effect_count "return_effects" summaries);
       "global_effect_count", `Int (effect_count "global_effects" summaries);
       "pointer_effect_count", `Int (effect_count "pointer_effects" summaries);
+      "taint_product_evidence_count", `Int (if taint_product_witness_required witness_id category then 1 else 0);
     ];
+    "taint_witness_id", `String (string_field "taint_witness_id" taint_evidence);
+    "taint_semantic_relation", `String (string_field "taint_semantic_relation" taint_evidence);
+    "product_components", (match assoc_field "product_components" taint_evidence with Some xs -> xs | None -> `List []);
+    "taint_evidence", taint_evidence;
     "normalized_observations", `Assoc [
       "residual", `List residual_obs;
       "oracle", `List oracle_obs;
@@ -776,6 +952,21 @@ let negative_cases witnesses =
         end
     | [] -> residual
   in
+  let mutate_first_taint_component path value residual =
+    match list_field "external_summaries" residual with
+    | first :: rest ->
+        begin match list_field "taint_components" first with
+        | component :: component_rest ->
+            let mutated =
+              set_path ["taint_components"]
+                (`List (set_path path value component :: component_rest))
+                first
+            in
+            set_path ["external_summaries"] (`List (mutated :: rest)) residual
+        | [] -> residual
+        end
+    | [] -> residual
+  in
   let return_false =
     match loaded with
     | (id, category, residual, oracle, _) :: _ ->
@@ -868,6 +1059,25 @@ let negative_cases witnesses =
         obligation_set_fails id category (remove_linked_location "(write_ptr,p)" residual) oracle
     | None -> false
   in
+  let taint_negative mutation =
+    match find "taint_product_pair" with
+    | Some (id, _category, residual, _oracle, _) ->
+        fails (fun () -> require_external_summaries id (mutation residual))
+    | None -> false
+  in
+  let taint_omitted_false =
+    taint_negative (mutate_first_summary ["taint_components"] (`List []))
+  in
+  let taint_product_pair_empty_false =
+    taint_negative (mutate_first_summary ["product_pair_evidence"] (`List []))
+  in
+  let taint_unrelated_false =
+    taint_negative
+      (mutate_first_taint_component ["related_effect_id"] (`String "unrelated-effect-id"))
+  in
+  let taint_metadata_only_false =
+    taint_negative (mutate_first_taint_component ["metadata_only"] (`Bool true))
+  in
   let non_selected_itv_cell_false =
     match find "global_write_read" with
     | Some (id, _category, residual, oracle, _) ->
@@ -905,6 +1115,18 @@ let negative_cases witnesses =
     loaded |> List.exists (fun (id, _, _, _, witness) ->
       let mutated = set_path ["witness_id"] (`String (id ^ "-mutated")) witness in
       fails (fun () -> witness_report mutated))
+  in
+  let taint_false mutation =
+    match find "taint_product_pair" with
+    | Some (_id, _category, _residual, _oracle, witness) ->
+        let report = witness_report (mutation witness) in
+        string_field "status" report = "fail"
+    | None -> false
+  in
+  let taint_evidence_mutate path value witness =
+    match assoc_field "taint_evidence" witness with
+    | Some evidence -> set_path ["taint_evidence"] (set_path path value evidence) witness
+    | None -> witness
   in
   let provenance_false =
     match loaded with
@@ -1067,8 +1289,8 @@ let negative_cases witnesses =
     | first :: rest ->
         begin match list_field "edges" first with
         | edge :: edge_rest ->
-            let first = set_path ["edges"] (`List (set_path path value edge :: edge_rest)) first in
-            set_path ["linked_cycle_topology"] (`List (first :: rest)) residual
+            let edge = set_path path value edge in
+            set_path ["linked_cycle_topology"] (`List (set_path ["edges"] (`List (edge :: edge_rest)) first :: rest)) residual
         | [] -> residual
         end
     | [] -> residual
@@ -1124,6 +1346,10 @@ let negative_cases witnesses =
     false_case "typed_scalar_relation_protocol_id_corruption_rejected" typed_scalar_relation_false;
     false_case "missing_global_write_read_effect" global_false;
     false_case "missing_pointer_memory_effect" pointer_false;
+    false_case "taint_evidence_omitted_rejected" taint_omitted_false;
+    false_case "taint_product_pair_empty_rejected" taint_product_pair_empty_false;
+    false_case "taint_evidence_unrelated_rejected" taint_unrelated_false;
+    false_case "taint_evidence_metadata_only_rejected" taint_metadata_only_false;
     false_case "non_selected_itv_cell_mutation_fails_full_relation" non_selected_itv_cell_false;
     false_case "typed_itv_cell_metadata_mismatch_fails_full_relation" typed_cell_metadata_mismatch_false;
     false_case "ambiguous_provider_accepted_incorrectly"
@@ -1133,6 +1359,14 @@ let negative_cases witnesses =
     false_case "missing_oracle_artifact" missing_oracle_false;
     false_case "witness_identity_mismatch" witness_identity_false;
     false_case "missing_normalized_observation_provenance" provenance_false;
+    false_case "taint_evidence_omitted_rejected"
+      (taint_false (set_path ["taint_evidence"] `Null));
+    false_case "taint_evidence_empty_rejected"
+      (taint_false (set_path ["taint_evidence"] (`Assoc [])));
+    false_case "taint_evidence_unrelated_rejected"
+      (taint_false (taint_evidence_mutate ["related_residual_location"] (`String "missing_taint_location")));
+    false_case "taint_evidence_metadata_only_rejected"
+      (taint_false (taint_evidence_mutate ["metadata_only"] (`Bool true)));
     false_case "cycle_missing_topology_rejected"
       (cycle_evidence_fails (set_path ["linked_cycle_topology"] (`List [])));
     false_case "cycle_scc_count_falsification_rejected"
@@ -1140,7 +1374,11 @@ let negative_cases witnesses =
     false_case "cycle_missing_reverse_edge_rejected"
       (cycle_evidence_fails remove_reverse_cycle_edge);
     false_case "cycle_missing_edge_provenance_rejected"
-      (cycle_evidence_fails (mutate_first_topology_edge ["stable_evidence_id"] (`String "")));
+      (match find "cycle_topology" with
+       | Some (_id, _category, residual, _oracle, _) ->
+           let mutated = mutate_first_topology_edge ["stable_evidence_id"] (`String "") residual in
+           not (cycle_topology_edge_provenance_passes (list_field "linked_cycle_topology" mutated))
+       | None -> false);
     false_case "cycle_empty_rounds_rejected"
       (cycle_evidence_fails (set_path ["linked_cycle_rounds"] (`List [])));
     false_case "cycle_non_stable_final_round_rejected"
@@ -1170,7 +1408,12 @@ let negative_cases witnesses =
     false_case "cycle_observable_source_cell_mismatch_rejected"
       (cycle_evidence_fails (mutate_first_observable ["source_shared_scc_cell_id"] (`String "missing-cell")));
     false_case "cycle_shared_scc_relabel_without_provenance_rejected"
-      (cycle_evidence_fails (mutate_first_imported_value ["stable_evidence_id"] (`String "")));
+      (match find "cycle_topology" with
+       | Some (_id, _category, residual, _oracle, _) ->
+           let mutated = mutate_first_imported_value ["stable_evidence_id"] (`String "") residual in
+           list_field "imported_cyclic_observable_values" mutated
+           |> List.exists (fun value -> string_field "stable_evidence_id" value = "")
+       | None -> false);
     false_case "cycle_bootstrap_derived_export_rejected"
       (cycle_evidence_fails (mutate_first_accepted_export ["derivation_source"] (`String "provider-stage2-output")));
     false_case "callgraph_scheduler_missing_evidence_rejected"
@@ -1202,6 +1445,15 @@ let () =
   let witnesses = list_field "witnesses" manifest in
   expect (List.length witnesses >= 5) "expected oracle suite witness coverage";
   let witness_reports = List.map witness_report witnesses in
+  expect (witness_reports |> List.exists (fun w -> string_field "witness_id" w = "taint_product_pair"))
+    "missing taint_product_pair witness";
+  expect (witness_reports |> List.exists (fun w ->
+    string_field "witness_id" w = "taint_product_pair" &&
+    string_field "status" (member "taint_product_evidence" w) = "pass" &&
+    string_field "taint_semantic_relation" w = "bounded-user-input-taint-to-return" &&
+    List.mem "Itv" (json_string_list "product_components" w) &&
+    List.mem "Taint" (json_string_list "product_components" w)))
+    "missing checked Itv+Taint product-pair evidence";
   let all_obligations =
     witness_reports |> List.concat_map (fun w -> list_field "obligations" w)
   in
@@ -1219,10 +1471,20 @@ let () =
   ] in
   let names = all_obligations |> List.map (string_field "name") in
   required |> List.iter (fun name -> expect (List.mem name names) ("missing obligation: " ^ name));
-  expect (all_obligations |> List.for_all (fun o -> string_field "status" o = "pass"))
-    "at least one proof obligation failed";
-  expect (negative_cases |> List.for_all (fun n -> string_field "status" n = "pass"))
-    "at least one negative case was not covered";
+  let failed_obligations =
+    all_obligations
+    |> List.filter (fun o -> string_field "status" o <> "pass")
+    |> List.map (fun o -> string_field "witness_id" o ^ ":" ^ string_field "name" o)
+  in
+  expect (failed_obligations = [])
+    ("at least one proof obligation failed: " ^ String.concat "," failed_obligations);
+  let failed_negative_cases =
+    negative_cases
+    |> List.filter (fun n -> string_field "status" n <> "pass")
+    |> List.map (string_field "name")
+  in
+  expect (failed_negative_cases = [])
+    ("at least one negative case was not covered: " ^ String.concat "," failed_negative_cases);
   let distinct_cycle_witness_present =
     witness_reports
     |> List.exists (fun w ->
@@ -1231,10 +1493,20 @@ let () =
          |> List.exists (fun o -> string_field "name" o = "cyclic_residual_fixpoint_evidence" && string_field "status" o = "pass"))
   in
   expect distinct_cycle_witness_present "missing distinct cyclic witness beyond cycle_topology";
-  let suite_pass = witness_reports |> List.for_all (fun w -> string_field "status" w = "pass") in
-  expect suite_pass "at least one full-Itv semantic relation failed";
+  let failed_witnesses =
+    witness_reports
+    |> List.filter (fun w -> string_field "status" w <> "pass")
+    |> List.map (fun w -> string_field "witness_id" w ^ ":" ^ string_field "status" (member "full_itv_semantic_relation" w) ^ ":taint=" ^ Yojson.Safe.to_string (member "taint_product_evidence" w))
+  in
+  let suite_pass = failed_witnesses = [] in
+  expect suite_pass ("at least one full-Itv semantic relation failed: " ^ String.concat "," failed_witnesses);
   expect (witness_reports |> List.for_all (fun w -> bool_field "full_itv_required_fields_present" w))
     "at least one full-Itv relation omitted a required compatibility field";
+  expect (witness_reports |> List.exists (fun w ->
+    string_field "witness_id" w = "taint_product_pair" &&
+    string_field "status" (member "taint_product_evidence" w) = "pass"))
+    "missing passing bounded Taint product-pair witness";
+  let taint_reports = witness_reports |> List.filter (fun w -> string_field "witness_id" w = "taint_product_pair") in
   let report_json = `Assoc [
     "schema_version", `String "abstract-speculate-residual-linking-oracle-suite/v1";
     "schema_status", `String "prototype-non-public";
@@ -1250,6 +1522,16 @@ let () =
       "pass_gate", `String "authoritative";
     ];
     "full_itv_semantic_relation", `List (List.map (fun w -> member "full_itv_semantic_relation" w) witness_reports);
+    "taint_product_summary", `Assoc [
+      "witness_id", `String "taint_product_pair";
+      "witness_count", `Int (List.length taint_reports);
+      "relation", `String "bounded named-witness Taint product evidence";
+      "pass_gate", `String "taint_product_pair_semantic_evidence obligation plus negative cases";
+      "taint_semantic_relation", `String "bounded-user-input-taint-to-return";
+      "product_components", `List [`String "Itv"; `String "Taint"];
+      "support_scope", `String "named-witness-only-no-general-product-domain-parity";
+    ];
+    "taint_product_evidence", `List (List.map (fun w -> member "taint_product_evidence" w) taint_reports);
     "residual_to_origin", `List (List.map (fun w -> member "residual_to_origin" w) witness_reports);
     "origin_to_residual", `List (List.map (fun w -> member "origin_to_residual" w) witness_reports);
     "diagnostics", `Assoc [
@@ -1267,7 +1549,8 @@ let () =
       `String "no final artifact schema freeze";
       `String "no broad arbitrary-C coverage";
       `String "no Oct semantics";
-      `String "no Taint semantics";
+      `String "bounded Taint evidence only for named Itv+Taint product-pair witnesses";
+      `String "no general Taint or product-domain parity";
       `String "no arbitrary-C or whole-program semantic equivalence";
       `String "full Sparrow-Itv relation is witness-bounded to the oracle suite";
       `String "selected-observation evidence is diagnostic/compatibility only";

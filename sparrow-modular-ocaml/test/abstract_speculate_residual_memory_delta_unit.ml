@@ -68,13 +68,33 @@ let make_pointer () =
   | Ok delta -> delta
   | Error reason -> failwith reason
 
+let make_taint () =
+  match
+    Delta.make_taint_product_evidence
+      ~taint_witness_id:"taint_product_pair"
+      ~taint_source:"provider:taint_source"
+      ~taint_sink:"importer:taint_sink"
+      ~taint_state:(Delta.Tainted "user-input")
+      ~taint_semantic_relation:"source-taints-sink"
+      ~related_residual_location:"shared_taint"
+      ~itv_observable_value:"([42,42], unit)"
+      ~evidence_paths:[
+        "fixtures/abstract_speculate_residual_linking_oracle_suite/taint_product_pair/provider.c";
+        "fixtures/abstract_speculate_residual_linking_oracle_suite/taint_product_pair/importer.c";
+      ]
+  with
+  | Ok evidence -> evidence
+  | Error reason -> failwith reason
+
 let () =
   let global = make_global () in
   let pointer = make_pointer () in
+  let taint = Delta.taint_product_evidence_to_json (make_taint ()) in
   expect_ok (Delta.validate_delta_json (Delta.delta_to_json global));
   expect_ok (Delta.validate_delta_json (Delta.delta_to_json pointer));
   expect_ok (Delta.validate_summary_json (summary global));
   expect_ok (Delta.validate_summary_json (summary pointer));
+  expect_ok (Delta.validate_taint_product_evidence_json taint);
   expect_error_contains "memory_delta_role_mismatch"
     (Delta.validate_delta_json (set_path ["writer_role"] (`String "reader") (Delta.delta_to_json global)));
   expect_error_contains "memory_delta_location_mismatch"
@@ -87,8 +107,20 @@ let () =
     (Delta.validate_delta_json (set_path ["delta_chain"] (`List []) (Delta.delta_to_json global)));
   expect_error_contains "memory_delta_chain_missing"
     (Delta.validate_summary_json (set_path ["delta_chains"] (`List []) (summary global)));
+  expect_error_contains "taint_product_component_mismatch"
+    (Delta.validate_taint_product_evidence_json (set_path ["product_components"] (`List [`String "Taint"]) taint));
+  expect_error_contains "taint_product_relation_mismatch"
+    (Delta.validate_taint_product_evidence_json (set_path ["taint_state"] (`String "tainted") taint));
+  expect_error_contains "taint_product_relation_mismatch"
+    (Delta.validate_taint_product_evidence_json (set_path ["metadata_only"] (`Bool true) taint));
+  expect_error_contains "taint_product_chain_missing"
+    (Delta.validate_taint_product_evidence_json (set_path ["taint_chain"] (`List []) taint));
   begin match Delta.domain_of_string "Oct" with
   | Ok _ -> failwith "Oct domain accepted"
   | Error _ -> ()
+  end;
+  begin match Delta.domain_of_string "Taint" with
+  | Ok _ -> failwith "Taint memory domain accepted"
+  | Error reason -> expect (String.contains reason 'T') "Taint domain rejection must explain product-boundary"
   end;
   print_endline "abstract_speculate_residual_memory_delta_unit: PASS"

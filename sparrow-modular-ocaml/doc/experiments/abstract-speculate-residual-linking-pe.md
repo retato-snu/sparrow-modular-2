@@ -49,8 +49,10 @@ The left side is the linked residual analyzer produced after each module has alr
 
 The relation is still witness-bounded and prototype/non-public.  "Full
 Sparrow-Itv" means the complete Itv evidence emitted by the accepted
-residual-linking slice, not Oct, Taint, arbitrary-C semantic equivalence, or a
-whole-program C theorem.  The theorem-ready implementation statement for the
+residual-linking slice, not Oct, general Taint/product parity, arbitrary-C
+semantic equivalence, or a whole-program C theorem.  The bounded
+`taint_product_pair` witness is reported as separate Itv+Taint product evidence,
+not as part of the full-Itv pass gate.  The theorem-ready implementation statement for the
 supported fixtures is `solve(E_m, d) ⊒ I(m⊕d)`, where `E_m` is the emitted
 module-local residual equation set and `d` is validated dynamic extern/link
 input; equality is not claimed outside the checked witness relation.
@@ -126,10 +128,11 @@ derivations, return effects, v1 compatibility payloads, and duplicated embedded
 return effects agree on those fields.  A mismatch is reported as a
 `typed_scalar_protocol_mismatch` call-effect failure.
 
-This protocol deliberately excludes Oct and Taint and does not discover
-providers, schedule calls, resolve imports, traverse module lists, or broaden
-the existing call graph.  Those responsibilities remain in the existing
-residual-linker matching and scheduling flow.
+This protocol deliberately excludes Oct and general Taint/product parity and
+does not discover providers, schedule calls, resolve imports, traverse module
+lists, or broaden the existing call graph.  The only Taint support in this
+milestone is the named bounded product-pair evidence attached to
+`taint_product_pair`.
 
 ### Domains
 
@@ -300,7 +303,7 @@ Ambiguous provider choices still fail with diagnostics. Deterministic multiple-i
 
 - No whole-program semantic equivalence proof beyond the witness-bounded full Sparrow-Itv evidence universe.
 - No broad arbitrary-C coverage.
-- No Oct or Taint semantics.
+- No Oct semantics, and no general Taint/product-domain parity; Taint evidence is bounded to the named `taint_product_pair` witness.
 - No optimized or production-grade residual linker.
 - No final API freeze for the residual module/linker contract.
 - No final general memory/global/call-effect summary language; richer effect observations in the oracle suite remain witness-bounded prototype evidence.
@@ -323,7 +326,7 @@ current PE/linking relation is intentionally Itv-scoped:
 
 - `full-sparrow-itv-semantic-relation` inventories Itv evidence exposed by the
   accepted residual-linking slice.
-- Taint, Oct, OctImpact, and product-domain parity are intentionally excluded.
+- Oct, OctImpact, and general product-domain parity are intentionally excluded; Taint has only named bounded `taint_product_pair` evidence.
 - Alarm/report PE is intentionally excluded; current evidence is table/effect
   relation evidence, not final user-facing Sparrow alarm classification.
 
@@ -574,7 +577,7 @@ The suite report is explicitly `prototype-non-public`.  Positive witnesses must 
 - row/effect provenance into both artifact families;
 - named obligations with pass/fail status.
 
-The relation statement is witness-bounded and full Sparrow-Itv scoped.  The checker allows documented Itv coverage normalization for interval-compatible final-table cells through the shared typed residual-cell adapter and records equality as not claimed when residual cells are over-approximations.  Additive typed cell metadata is diagnostic/compatibility evidence: required relation fields remain unchanged, and mismatched typed cell metadata is rejected by the full-ITV relation.  The relation does not claim Oct, Taint, arbitrary-C, or whole-program semantic equivalence.
+The relation statement is witness-bounded and full Sparrow-Itv scoped.  The checker allows documented Itv coverage normalization for interval-compatible final-table cells through the shared typed residual-cell adapter and records equality as not claimed when residual cells are over-approximations.  Additive typed cell metadata is diagnostic/compatibility evidence: required relation fields remain unchanged, and mismatched typed cell metadata is rejected by the full-ITV relation.  The relation does not claim Oct, general Taint/product parity, arbitrary-C, or whole-program semantic equivalence; the named `taint_product_pair` evidence is checked separately as bounded Itv+Taint product evidence.
 
 ### Named obligations
 
@@ -590,7 +593,7 @@ The suite-level report includes these obligations:
 - `cyclic_imported_value_exact_singleton_parity`;
 - `typed_scalar_call_protocol_matches`.
 
-Negative-case coverage is represented in the report for mismatched values/effects, typed scalar protocol metadata/protocol-id mismatches, missing global/pointer observations, a non-selected Itv cell removal that fails the full relation while selected diagnostics still pass, ambiguous providers, invalid mixed-role propagation, shortcut leakage, missing oracle artifacts, witness identity mismatch, missing provenance, source-level removal of an imported cyclic observable sink write, and cycle-evidence falsification.
+Negative-case coverage is represented in the report for mismatched values/effects, typed scalar protocol metadata/protocol-id mismatches, missing global/pointer observations, a non-selected Itv cell removal that fails the full relation while selected diagnostics still pass, ambiguous providers, invalid mixed-role propagation, shortcut leakage, missing oracle artifacts, witness identity mismatch, missing provenance, source-level removal of an imported cyclic observable sink write, and cycle-evidence falsification.  Bounded Taint-first evidence must additionally fail when Taint evidence is omitted, empty, unrelated to the residual cell/effect, or metadata-only.
 
 ## Topology support after the oracle-suite milestone
 
@@ -609,7 +612,7 @@ whose emitted edges carry direct callgraph or residual call-binding provenance;
 dependency-only schedules are a residual dependency scheduler.  The current
 cyclic proof obligation is deliberately scoped to the oracle-suite witness
 relation and recomputable emitted-equation evidence; it is not an arbitrary-C
-or full product-domain theorem.
+or full product-domain theorem.  The bounded `taint_product_pair` evidence is a named witness only and does not imply general Taint/product-domain parity.
 
 Multiple extern roots are resolved by matching residual component provenance for the imported callee name, falling back to the singleton-root case for the original return-only witness.
 
@@ -639,5 +642,7 @@ Relation checks validate the shared metadata and surface
 `typed_scalar_protocol_mismatch` when fixture-guessed or inconsistent scalar
 call evidence is observed.
 
-Scope remains intentionally scalar/full-Itv only: Oct and Taint semantics,
-broader call-graph rewrites, and proof-system expansion are out of scope.
+Scope remains intentionally scalar/full-Itv plus the named bounded
+`taint_product_pair` product evidence: Oct semantics, general Taint/product
+parity, broader call-graph rewrites, and proof-system expansion are out of
+scope.

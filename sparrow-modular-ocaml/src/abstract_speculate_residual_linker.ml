@@ -75,6 +75,8 @@ type external_summary_v3 = {
   delta_chains : Yojson.Safe.t list;
   global_effects : Yojson.Safe.t list;
   pointer_effects : Yojson.Safe.t list;
+  taint_components : Yojson.Safe.t list;
+  product_pair_evidence : Yojson.Safe.t list;
   provenance : Yojson.Safe.t;
   v1_compat : external_summary_v1_compat;
 }
@@ -173,22 +175,30 @@ let external_summary_v1_compat_to_json summary =
   ]
 
 let external_summary_to_json summary =
+  let taint_domains =
+    if summary.taint_components = [] then []
+    else [`String "taint-product-component"; `String "itv-taint-product-pair"]
+  in
   `Assoc [
     "schema_version", `String MemoryDelta.external_summary_schema_id;
     "summary_api_status", `String MemoryDelta.summary_api_status;
     "summary_scope", `String "sparrow-itv-selected-witness";
     "memory_delta_schema", `String MemoryDelta.memory_delta_schema_id;
-    "effect_domains", `List [
+    "effect_domains", `List ([
       `String "return";
       `String "global-write-read";
       `String "pointer-memory-effect";
       `String "memory-delta";
-    ];
+    ] @ taint_domains);
     "return_effects", `List summary.return_effects;
     "memory_deltas", `List summary.memory_deltas;
     "delta_chains", `List summary.delta_chains;
     "global_effects", `List summary.global_effects;
     "pointer_effects", `List summary.pointer_effects;
+    "taint_components", `List summary.taint_components;
+    "product_pair_evidence", `List summary.product_pair_evidence;
+    "taint_support_scope",
+      `String (if summary.taint_components = [] then "absent" else "bounded named witness only");
     "memory_effect_projection_status", `String "v2-compatible-non-authoritative";
     "typed_memory_delta_validation", MemoryDelta.validation_result_json (MemoryDelta.validate_summary_json (`Assoc [
       "schema_version", `String MemoryDelta.external_summary_schema_id;
@@ -599,6 +609,26 @@ let make_external_summary
     memory_effects
     |> List.filter (fun eff -> string_field "domain" eff = Some "pointer-memory-effect")
   in
+  let taint_components =
+    if contains export_name "taint" then
+      [MemoryDelta.make_taint_component_json
+         ~witness_id:"taint_product_pair"
+         ~symbol:export_name
+         ~location:return_location
+         ~taint_state:"tainted-user-input"
+         ~source_evidence_path:"provider_row.return"
+         ~related_effect_id:return_effect_id]
+    else []
+  in
+  let product_pair_evidence =
+    match taint_components with
+    | [taint_component] ->
+        [MemoryDelta.make_product_pair_evidence_json
+           ~witness_id:"taint_product_pair"
+           ~itv_value:abstract_return_value
+           ~taint_component]
+    | _ -> []
+  in
   let v1_compat =
     {
       extern_scalar_value = ScalarCall.v1_extern_scalar_value_json scalar_return;
@@ -617,6 +647,8 @@ let make_external_summary
     delta_chains;
     global_effects;
     pointer_effects;
+    taint_components;
+    product_pair_evidence;
     provenance;
     v1_compat;
   }

@@ -32,7 +32,9 @@ link(PE(I, m), d) ~= I(m + d)
 
 Current evidence supports this for the witness-bounded full Sparrow-Itv evidence
 universe emitted by the residual-linking oracle suite, not arbitrary-C programs,
-Oct/Taint semantics, or the full Sparrow product analyzer.
+Oct/OctImpact semantics, general Taint product semantics, or the full
+Sparrow product analyzer.  The only Taint claim is the named bounded
+`taint_product_pair` product evidence.
 
 ## Implemented
 
@@ -53,14 +55,15 @@ Oct/Taint semantics, or the full Sparrow product analyzer.
 | First residual-linking prototype | Implemented for bounded witnesses | `src/abstract_speculate_residual_linker.ml`, `@abstract_speculate_residual_linking_pe`. |
 | Checked cyclic residual scheduling | Implemented only for bounded function-import SCC witnesses with explicit scheduler provenance | `src/abstract_speculate_residual_linker.ml`, `@abstract_speculate_residual_linking_oracle_suite`; reports may call scheduling callgraph-backed only when every scheduler edge carries direct callgraph or residual call-binding provenance. |
 | Residual-linking oracle suite | Implemented as prototype full Sparrow-Itv evidence | `@abstract_speculate_residual_linking_oracle_suite`. |
+| Bounded Taint-first product witness | Implemented only for the named `taint_product_pair` oracle-suite witness | ExternalSummary v3 reports `taint_components` and `product_pair_evidence` for one Itv+Taint product-pair; this is not general Taint/product-domain parity. |
 
 ## Not implemented / not claimed
 
 | Area | Missing capability | Why it matters |
 | --- | --- | --- |
 | Full Sparrow PE | Only selected real-Sparrow boundaries and the ItvDom sparse slice are staged. | Avoid claiming a complete PE of Sparrow. |
-| Full product-domain staging | The accepted staged semantics are still Itv-focused; other product components are not generally residualized. | Product-domain fidelity is required before broad Sparrow claims. |
-| Oct/Taint semantic preservation | The full relation is Itv-scoped only. | Product-domain claims require separate evidence and tests. |
+| Full product-domain staging | The accepted staged semantics remain generally Itv-focused; only a bounded named Taint product-pair witness is staged. | Product-domain fidelity is required before broad Sparrow claims. |
+| Oct/OctImpact and general Taint semantic preservation | Oct/OctImpact remain unsupported; Taint support is limited to `taint_product_pair` bounded evidence and is not general Taint parity. | Product-domain claims require separate evidence and tests. |
 | Arbitrary-C semantic preservation | Fixtures and oracle-suite witnesses bound the evidence. | Current results are not a theorem for all C modules. |
 | General residual summary language | ExternalSummary v2 is prototype/internal and typed for selected return, global-write/read, and pointer-memory effects, but remains witness-bounded. | Broader linking still needs a general effect algebra beyond selected Sparrow-Itv witnesses. |
 | General cyclic residual linking | Only checked function-import SCC witnesses are supported, and callgraph-backed scheduling is a provenance-gated report claim. Arbitrary recursive call/memory cycles, dependency-only schedules labeled as callgraph-backed, and cyclic effects outside the selected witnesses remain unsupported. | Broader cyclic linking still needs a general call/effect semantics plus oracle evidence beyond the current Sparrow-Itv witness slice. |
@@ -103,7 +106,7 @@ the solver-state contract:
 The strongest implementation statement remains `solve(E_m, d) ⊒ I(m⊕d)` for
 the checked witness universe.  Equality, arbitrary-C coverage, general cyclic
 linked residual solving beyond the checked witness SCCs, and full
-product-domain Sparrow PE remain out of scope.
+product-domain Sparrow PE remain out of scope.  A bounded `taint_product_pair` witness now records named Taint component evidence, but it does not broaden this claim to general product-domain staging.
 
 It currently supports deterministic acyclic function bindings, including
 multiple provider/import bindings and a mixed importer / provider role chain,

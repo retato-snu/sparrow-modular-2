@@ -695,8 +695,8 @@ let selected_observation_relation_json ~witness_id ~residual ~oracle =
     accepted residual-linking slice: final input/output table cells, semantic
     exports, linked-environment/call-effect facts, completion evidence, and
     oracle lineage.  The comparison is intentionally Itv-scoped and
-    witness-bounded; it is not a product-domain, Oct/Taint, arbitrary-C, or
-    whole-program C equivalence claim. *)
+    witness-bounded; it is not a general product-domain, Oct/OctImpact,
+    unbounded Taint, arbitrary-C, or whole-program C equivalence claim. *)
 
 let failure_taxonomy_json =
   `List [
@@ -737,7 +737,7 @@ let canonicalization_json =
 let full_itv_non_claims_json =
   `List [
     `String "no Oct semantics";
-    `String "no Taint semantics";
+    `String "Taint support is bounded to named taint_product_pair evidence; no general Taint/product-domain parity";
     `String "no arbitrary-C or whole-program semantic equivalence";
     `String "no origin Sparrow modification";
     `String "prototype-non-public relation schema";
@@ -1055,7 +1055,7 @@ let full_itv_semantic_relation_json ~witness_id ~residual ~oracle =
                          List.map (manifest_entry ~classification:"missing_from_origin") residual_missing);
       "intentionally_excluded", `List [
         `Assoc ["category", `String "domain"; "reason", `String "Oct excluded by user scope"];
-        `Assoc ["category", `String "domain"; "reason", `String "Taint excluded by user scope"];
+        `Assoc ["category", `String "domain"; "reason", `String "Taint only included for named bounded product-pair witness evidence, not general relation parity"];
         `Assoc ["category", `String "claim"; "reason", `String "arbitrary-C/whole-program equivalence excluded"];
       ];
       "expected_but_not_emitted", `List [];
@@ -1251,7 +1251,9 @@ let oracle_suite_obligations ~source_guard_obligation witness_id category residu
     | "pointer-memory-effect" -> [pointer_obligation witness_id residual oracle]
     | "multiple-providers-imports" -> [provider_resolution_obligation witness_id residual oracle]
     | "mixed-role-chain" -> [provider_resolution_obligation witness_id residual oracle; mixed_role_obligation witness_id residual oracle]
+    | "itv-taint-product-pair" -> []
     | "return-only" -> []
+    | "taint-product-pair" -> []
     | _ -> failwith ("unknown witness category: " ^ category)
   in
   return_obs @ category_obligation @ [source_guard_obligation witness_id]
