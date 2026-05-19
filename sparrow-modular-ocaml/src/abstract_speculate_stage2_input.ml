@@ -14,6 +14,7 @@ let contains s sub =
 
 let member = Yojson.Safe.Util.member
 let int_json n = `Int n
+let sort_json xs = List.sort (fun a b -> compare (Yojson.Safe.to_string a) (Yojson.Safe.to_string b)) xs
 
 let make_extern_effects ~source ~hash ~extern_roots =
   `Assoc [
@@ -195,6 +196,64 @@ let executed_row ~location default_row executed_component =
       with_fields fields ["memory", `List memory]
   | _ -> default_row
 
+
+let override_json_value ~location ~value json =
+  match json with
+  | `Assoc fields ->
+      let value_fields =
+        [
+          "value", `String (string_of_int value);
+          "residual_arithmetic_value", `Int value;
+          "stage2_semantics_applied", `Bool true;
+          "residual_value_source", `String "residual_state_view";
+        ]
+      in
+      begin
+        match string_field "location" json with
+        | Some loc when loc = location -> with_fields fields value_fields
+        | _ -> with_fields fields value_fields
+      end
+  | json -> json
+
+let override_row_value ~location ~value row =
+  match row with
+  | `Assoc fields ->
+      let memory =
+        match List.assoc_opt "memory" fields with
+        | Some (`List cells) ->
+            cells
+            |> List.map (fun cell ->
+                 match string_field "location" cell with
+                 | Some loc when loc = location -> override_json_value ~location ~value cell
+                 | _ -> cell)
+        | _ -> []
+      in
+      with_fields fields [ "memory", `List memory ]
+  | json -> json
+
+let override_execution_value ~location ~dependency_key ~value execution row =
+  match execution with
+  | `Assoc fields ->
+      let executed_component =
+        match List.assoc_opt "executed_component" fields with
+        | Some component -> override_json_value ~location ~value component
+        | None -> `Null
+      in
+      with_fields fields
+        [
+          "residual_arithmetic_value", `Int value;
+          "residual_value_source", `String "residual_state_view";
+          "residual_value_dependency", `String dependency_key;
+          "executed_component", executed_component;
+          "executed_row", row;
+        ]
+  | json -> json
+
+let override_result_value ~location ~dependency_key value (result : T.residual_component_result) =
+  let row = override_row_value ~location ~value result.T.row in
+  let execution = override_execution_value ~location ~dependency_key ~value result.T.execution row in
+  { T.row; execution }
+
 let execute_staged_component
     ~id
     ~source_file
@@ -295,6 +354,43 @@ let executed_transfer_component json =
 let executed_lattice_component json =
   staged_transfer_component json &&
   string_member "lattice_event" json <> ""
+
+
+let api_model_component execution =
+  match member "default_component" execution with
+  | `Assoc _ as component -> (
+      match string_field "api_residual_function" component with
+      | Some _ -> Some component
+      | None -> None)
+  | _ -> None
+
+let api_coverage_row execution =
+  match api_model_component execution with
+  | None -> None
+  | Some component ->
+      let function_name = string_field "api_residual_function" component |> Option.value ~default:"" in
+      let baseline_source = string_field "api_baseline_source" component |> Option.value ~default:"" in
+      let abstract_effect = string_field "api_abstract_effect" component |> Option.value ~default:"" in
+      let provenance = string_field "api_semantic_provenance" component |> Option.value ~default:"" in
+      Some
+        (`Assoc
+          [
+            "function_name", `String function_name;
+            "baseline_source", `String baseline_source;
+            "abstract_effect", `String abstract_effect;
+            "residual_equation_id", member "residual_equation_id" execution;
+            "residual_cell_target", member "residual_equation_target" execution;
+            "semantically_upstream_dependencies", member "residual_equation_dependencies" execution;
+            "stage2_seed_input_read", member "seed_input_read" execution;
+            "solver_state_read_count", member "residual_equation_state_read_count" execution;
+            "final_cell_provenance", `String provenance;
+            "positive_fixture", `String "abstract_speculate_residual_linking_pe/importer.c";
+            "negative_mutation", `String "api residual dependencies must not be empty or target/self-only";
+            "unsupported_api_coverage", member "unsupported_api_coverage" component;
+          ])
+
+let api_coverage_rows executions =
+  executions |> List.filter_map api_coverage_row |> sort_json
 
 let run_summary
     ~schema_version
@@ -406,6 +502,13 @@ let run_summary
     "control_residual_count", int_json (List.length control_equations);
     "executed_residual_count", int_json (List.length executed_residuals);
     "executed_residuals", `List executed_residuals;
+    "api_residual_model_coverage", `List (api_coverage_rows executed_residuals);
+    "api_residual_model_supported_functions",
+    `List
+      (api_coverage_rows executed_residuals
+      |> List.filter_map (fun row -> match member "function_name" row with `String fn -> Some (`String fn) | _ -> None)
+      |> List.sort_uniq compare);
+    "unsupported_api_residual_coverage", `List [];
     "residual_solver_run", `Bool true;
     "solver_backed_residual_fixpoint", `Bool true;
     "solver_iteration_count", `Int solver_iteration_count;

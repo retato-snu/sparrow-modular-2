@@ -169,6 +169,46 @@ let derivation_uses_v3_return_effect derivation =
   string_field "provider_module" eff = string_field "provider_module" derivation &&
   string_field "scalar_call_protocol_id" derivation = string_field "scalar_call_protocol_id" eff
 
+
+let api_coverage_rows linked =
+  list_field "module_logs" (execution_log linked)
+  |> List.concat_map (fun module_log ->
+       list_field "api_residual_model_coverage" (member "execution_log" module_log))
+
+let api_supported_functions linked =
+  api_coverage_rows linked
+  |> List.map (string_field "function_name")
+  |> unique_string_set
+
+let require_api_residual_model_coverage linked =
+  let rows = api_coverage_rows linked in
+  let supported = api_supported_functions linked in
+  [ "memcpy"; "strcpy"; "strlen" ]
+  |> List.iter (fun name -> expect (List.mem name supported) ("missing API residual coverage for " ^ name));
+  [ "memmove"; "strncpy"; "strcat"; "strdup"; "xstrdup"; "fgets"; "scanf" ]
+  |> List.iter (fun name -> expect (not (List.mem name supported)) ("unsupported API was claimed covered: " ^ name));
+  rows
+  |> List.iter (fun row ->
+       let fn = string_field "function_name" row in
+       let target = string_field "residual_cell_target" row in
+       let deps = list_field "semantically_upstream_dependencies" row |> List.map to_string in
+       expect (List.mem fn [ "memcpy"; "strcpy"; "strlen" ]) ("unexpected API residual coverage row: " ^ fn);
+       expect (contains (string_field "baseline_source" row) "itvSem.ml") ("missing ItvSem baseline for " ^ fn);
+       expect (contains (string_field "baseline_source" row) "apiSem.ml") ("missing ApiSem baseline for " ^ fn);
+       expect (string_field "residual_equation_id" row <> "") ("missing residual equation id for " ^ fn);
+       expect (target <> "") ("missing residual cell target for " ^ fn);
+       expect (deps <> []) ("empty API residual dependencies for " ^ fn);
+       expect (not (List.mem target deps)) ("API residual dependency is target/self-only for " ^ fn);
+       expect (int_field "solver_state_read_count" row > 0) ("API residual equation did not read solver state for " ^ fn);
+       expect (bool_field "stage2_seed_input_read" row) ("API residual equation did not read stage2 seed input for " ^ fn);
+       expect (string_field "final_cell_provenance" row = "residual-api-model-coverage/slice-1")
+         ("bad API residual provenance for " ^ fn);
+       expect (bool_field "unsupported_api_coverage" row = false) ("unsupported API coverage flag set for " ^ fn));
+  list_field "module_logs" (execution_log linked)
+  |> List.iter (fun module_log ->
+       expect (list_field "unsupported_api_residual_coverage" (member "execution_log" module_log) = [])
+         "unsupported API residual coverage list must stay empty")
+
 let require_external_summaries linked =
   let summaries = list_field "external_summaries" linked in
   expect (summaries <> []) "missing ExternalSummary v3 entries";
@@ -576,6 +616,7 @@ let () =
     "linked residual path did not report state-reading equation applications";
   expect (list_field "linked_exact_cell_dependencies" log <> [])
     "linked residual path did not expose exact cell dependencies";
+  require_api_residual_model_coverage linked;
   require_source_absent (project_path "sparrow-modular-ocaml/src/abstract_speculate_residual_linker.ml");
   require_source_absent (project_path "sparrow-modular-ocaml/test/abstract_speculate_residual_linking_pe_dump.ml");
   let recomputed = recompute_evidence ~source_guard_passed:true ~manifest linked in

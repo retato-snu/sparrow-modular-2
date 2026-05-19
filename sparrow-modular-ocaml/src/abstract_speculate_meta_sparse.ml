@@ -74,6 +74,9 @@ let command_kind cmd =
 let extern_dependency_of_node global node cmd =
   match cmd with
   | IntraCfg.Cmd.Cexternal _ -> Some "unknown-extern-call"
+  | IntraCfg.Cmd.Ccall (_, Sparrow_cil.Lval (Sparrow_cil.Var callee, Sparrow_cil.NoOffset), _, _)
+    when List.mem callee.Sparrow_cil.vname [ "memcpy"; "strcpy"; "strlen" ] ->
+      None
   | IntraCfg.Cmd.Ccall (_, Sparrow_cil.Lval (Sparrow_cil.Var callee, Sparrow_cil.NoOffset), _, _) ->
       let callees = InterCfg.get_callees node global.Global.icfg in
       if not (InterCfg.ProcSet.is_empty callees) || List.mem callee.Sparrow_cil.vname (sorted_pids global)
@@ -286,7 +289,27 @@ let locs_for_node spec access dug node =
 let static_value_string spec loc =
   ItvDom.Val.to_string (ItvDom.Mem.find loc spec.ItvSem.Spec.premem)
 
-let component_for_cell ~module_id ~source_file ~source_hash ~table ~node ~ordinal ~row ~loc ~component_kind ~transfer_event ~lattice_event ~shape ~witness_constructor ~semantic_expression ~semantic_guard ~expression_code ~guard_code row_fragment =
+let component_for_cell
+    ~module_id
+    ~source_file
+    ~source_hash
+    ~table
+    ~node
+    ~ordinal
+    ~row
+    ~loc
+    ~component_kind
+    ~transfer_event
+    ~lattice_event
+    ~shape
+    ~witness_constructor
+    ~semantic_expression
+    ~semantic_guard
+    ?(residual_dependencies = [])
+    ?(derive_from_first_dependency = false)
+    ~expression_code
+    ~guard_code
+    row_fragment =
   Residual.make_component
     ~module_id
     ~source_file
@@ -304,6 +327,8 @@ let component_for_cell ~module_id ~source_file ~source_hash ~table ~node ~ordina
     ~witness_constructor
     ~semantic_expression
     ~semantic_guard
+    ~residual_dependencies
+    ~derive_from_first_dependency
     ~expression_code
     ~guard_code
     ()
@@ -487,19 +512,44 @@ and residual_guard_code spec node memory exp =
       let c = residual_expression_code spec node memory exp in
       .<fun input -> .~c input <> 0>.
 
-let make_dynamic_update ~module_id ~source_file ~source_hash ~table ~node ~iteration ~ordinal ~lattice_event ~transfer_event ~shape ~witness_constructor ~semantic_expression ~semantic_guard ~expression_code ~guard_code ~loc ~abstract_value =
+let make_dynamic_update
+    ~module_id
+    ~source_file
+    ~source_hash
+    ~table
+    ~node
+    ~iteration
+    ~ordinal
+    ~lattice_event
+    ~transfer_event
+    ~shape
+    ~witness_constructor
+    ~semantic_expression
+    ~semantic_guard
+    ~residual_dependencies
+    ~derive_from_first_dependency
+    ~extra_row_fields
+    ~expression_code
+    ~guard_code
+    ~loc
+    ~abstract_value
+    () =
   let semantic_source = transfer_event ^ ":" ^ semantic_expression in
   let cell = dynamic_staged_cell ~loc ~abstract_value ~semantic_source ~expression_code in
   let row_fragment =
-    `Assoc [
-      "location", `String (loc_to_string loc);
-      "value", `String abstract_value;
-      "stage", `String "D";
-      "semantic_expression", `String semantic_expression;
-      "semantic_guard", `String semantic_guard;
-      "transfer_event", `String transfer_event;
-      "fixpoint_iteration", `Int iteration;
-    ]
+    `Assoc
+      ([
+         "location", `String (loc_to_string loc);
+         "value", `String abstract_value;
+         "stage", `String "D";
+         "semantic_expression", `String semantic_expression;
+         "semantic_guard", `String semantic_guard;
+         "transfer_event", `String transfer_event;
+         "fixpoint_iteration", `Int iteration;
+         "residual_dependencies", `List (List.map (fun dep -> `String (StageT.residual_cell_key dep)) residual_dependencies);
+         "derive_from_first_dependency", `Bool derive_from_first_dependency;
+       ]
+      @ extra_row_fields)
   in
   let row = row_from_cells node [{ loc; cell; row_fragment; component = None }] in
   let component =
@@ -519,11 +569,151 @@ let make_dynamic_update ~module_id ~source_file ~source_hash ~table ~node ~itera
       ~witness_constructor
       ~semantic_expression
       ~semantic_guard
+      ~residual_dependencies
+      ~derive_from_first_dependency
       ~expression_code
       ~guard_code
       row_fragment
   in
   { loc; cell; row_fragment; component = Some component }
+
+
+let callee_name = function
+  | Sparrow_cil.Lval (Sparrow_cil.Var callee, Sparrow_cil.NoOffset) -> Some callee.Sparrow_cil.vname
+  | _ -> None
+
+let api_residual_baseline = function
+  | "memcpy" -> "sparrow-modular-ocaml/src/itvSem.ml:482-492; sparrow-modular-ocaml/src/apiSem.ml:70-75"
+  | "strcpy" -> "sparrow-modular-ocaml/src/itvSem.ml:510-522; sparrow-modular-ocaml/src/apiSem.ml:70-75"
+  | "strlen" -> "sparrow-modular-ocaml/src/itvSem.ml:392-398; sparrow-modular-ocaml/src/apiSem.ml:103-107"
+  | name -> "unsupported-api-residual-model:" ^ name
+
+let api_residual_effect = function
+  | "memcpy" -> "source array memory copied to destination locations; memcpy return destination is tracked only when assigned"
+  | "strcpy" -> "destination null-position/value witness copied from source; C return semantics intentionally not claimed"
+  | "strlen" -> "return interval/value witness derived from source null-position"
+  | name -> "unsupported residual API model: " ^ name
+
+let component_dependency_of_cell cell =
+  match cell.component with
+  | Some component ->
+      Some
+        (StageT.make_residual_cell_id
+           ~cell_table:component.StageT.table
+           ~cell_node:component.StageT.node
+           ~cell_location:component.StageT.location)
+  | None -> None
+
+let dynamic_dependencies_for_locs locs memory =
+  loc_list_of_powlocs locs
+  |> List.filter_map (fun loc ->
+       match memory_find loc memory with
+       | Some cell when StageT.typed_code_present cell.cell -> component_dependency_of_cell cell
+       | _ -> None)
+  |> List.sort_uniq compare
+
+let first_dynamic_expression_code locs memory =
+  loc_list_of_powlocs locs
+  |> List.find_map (fun loc ->
+       match memory_find loc memory with
+       | Some cell -> StageT.dynamic_code cell.cell
+       | None -> None)
+  |> function
+  | Some code -> code
+  | None -> static_expression_code 0
+
+let api_extra_fields ~function_name ~abstract_effect =
+  [
+    "api_residual_function", `String function_name;
+    "api_baseline_source", `String (api_residual_baseline function_name);
+    "api_abstract_effect", `String abstract_effect;
+    "api_semantic_provenance", `String "residual-api-model-coverage/slice-1";
+    "covered_api", `Bool true;
+    "unsupported_api_coverage", `Bool false;
+  ]
+
+let api_model_updates
+    ~module_id
+    ~source_file
+    ~source_hash
+    ~table
+    ~node
+    ~iteration
+    ~ordinal_base
+    spec
+    input_memory
+    lvo
+    function_name
+    args =
+  let make_api_updates target_locs source_locs abstract_effect abstract_value offset =
+    let dependencies = dynamic_dependencies_for_locs source_locs input_memory in
+    if dependencies = [] then []
+    else
+      target_locs
+      |> loc_list_of_powlocs
+      |> List.mapi (fun i loc ->
+           make_dynamic_update
+             ~module_id
+             ~source_file
+             ~source_hash
+             ~table
+             ~node
+             ~iteration
+             ~ordinal:(ordinal_base + offset + i)
+             ~lattice_event:"staged-lattice-transfer-D-before-fixpoint"
+             ~transfer_event:("api-residual-model-" ^ function_name ^ "-created-D-during-transfer")
+             ~shape:"Staged_component_shape"
+             ~witness_constructor:"Api_residual_model"
+             ~semantic_expression:("api residual model " ^ function_name ^ ": " ^ abstract_effect)
+             ~semantic_guard:("api residual model guard at " ^ node_to_string node)
+             ~residual_dependencies:dependencies
+             ~derive_from_first_dependency:true
+             ~extra_row_fields:(api_extra_fields ~function_name ~abstract_effect)
+             ~expression_code:(first_dynamic_expression_code source_locs input_memory)
+             ~guard_code:.<fun _ -> true>.
+             ~loc
+             ~abstract_value
+             ())
+  in
+  match function_name, args with
+  | "memcpy", dst :: src :: _ ->
+      let dst_locs = powlocs_of_exp spec node dst in
+      let src_locs = powlocs_of_exp spec node src in
+      let copy_updates =
+        make_api_updates dst_locs src_locs (api_residual_effect "memcpy") "api-memcpy-copy-from-source" 0
+      in
+      let return_updates =
+        match lvo with
+        | Some lv ->
+            make_api_updates
+              (powloc_of_lval spec node lv)
+              src_locs
+              "memcpy return destination with source-backed copy provenance"
+              "api-memcpy-return-destination"
+              1000
+        | None -> []
+      in
+      copy_updates @ return_updates
+  | "strcpy", dst :: src :: _ ->
+      make_api_updates
+        (powlocs_of_exp spec node dst)
+        (powlocs_of_exp spec node src)
+        (api_residual_effect "strcpy")
+        "api-strcpy-null-position-from-source"
+        0
+  | "strlen", src :: _ ->
+      begin
+        match lvo with
+        | Some lv ->
+            make_api_updates
+              (powloc_of_lval spec node lv)
+              (powlocs_of_exp spec node src)
+              (api_residual_effect "strlen")
+              "api-strlen-length-from-source-null-position"
+              0
+        | None -> []
+      end
+  | _ -> []
 
 let command_transfer_updates ~module_id ~source_file ~source_hash spec global table node iteration input_memory ordinal_base =
   let cmd = InterCfg.cmdof global.Global.icfg node in
@@ -545,10 +735,14 @@ let command_transfer_updates ~module_id ~source_file ~source_hash spec global ta
            ~witness_constructor:"Staged_component"
            ~semantic_expression
            ~semantic_guard
+           ~residual_dependencies:[]
+           ~derive_from_first_dependency:false
+           ~extra_row_fields:[]
            ~expression_code
            ~guard_code
            ~loc
-           ~abstract_value)
+           ~abstract_value
+           ())
   in
   match cmd with
   | IntraCfg.Cmd.Cexternal (lv, _) ->
@@ -560,6 +754,26 @@ let command_transfer_updates ~module_id ~source_file ~source_hash spec global ta
         (fun loc -> extern_expression_code node loc)
         .<fun _ -> true>.
   | IntraCfg.Cmd.Ccall (lvo, callee, args, _) ->
+      let api_updates =
+        match callee_name callee with
+        | Some (("memcpy" | "strcpy" | "strlen") as function_name) ->
+            api_model_updates
+              ~module_id
+              ~source_file
+              ~source_hash
+              ~table
+              ~node
+              ~iteration
+              ~ordinal_base
+              spec
+              input_memory
+              lvo
+              function_name
+              args
+        | _ -> []
+      in
+      if api_updates <> [] then api_updates
+      else
       let unknown = extern_dependency_of_node global node cmd <> None in
       let arg_reads =
         List.fold_left (fun acc exp -> PowLoc.union acc (powlocs_of_exp spec node exp)) PowLoc.empty args
@@ -634,7 +848,7 @@ let staged_transfer_node ~module_id ~source_file ~source_hash spec global access
       table
       node
       iteration
-      base_memory
+      (input_memory @ base_memory)
       ordinal_base
   in
   replace_cells updates base_memory
@@ -649,17 +863,35 @@ let join_predecessor_memory pred_mem succ_mem =
     | None -> Hashtbl.replace by_loc key pred_cell
     | Some old_cell ->
         let joined, event = StageT.staged_join old_cell.cell pred_cell.cell in
+        let component = match old_cell.component with Some _ -> old_cell.component | None -> pred_cell.component in
+        let row_fragment = if old_cell.component = None && pred_cell.component <> None then pred_cell.row_fragment else old_cell.row_fragment in
         events := event :: !events;
-        Hashtbl.replace by_loc key { old_cell with cell = joined }) pred_mem;
+        Hashtbl.replace by_loc key { old_cell with cell = joined; row_fragment; component }) pred_mem;
   Hashtbl.fold (fun _ cell acc -> cell :: acc) by_loc [], !events
+
+
+let supported_api_model_call global node =
+  match InterCfg.cmdof global.Global.icfg node with
+  | IntraCfg.Cmd.Ccall (_, callee, _, _) -> (
+      match callee_name callee with
+      | Some ("memcpy" | "strcpy" | "strlen") -> true
+      | _ -> false)
+  | _ -> false
+
+let api_model_nodes global =
+  global.Global.icfg
+  |> InterCfg.nodesof
+  |> List.filter (supported_api_model_call global)
 
 let staged_sparse_pipeline ~module_id ~source_file ~source_hash spec global access dug =
   let completion = new_completion () in
   let extern_nodes = extern_dependency_nodes global dug in
   let nodes =
     DUGraph.nodesof dug
-    |> BatSet.fold (fun node acc -> node :: acc) |> fun f -> f []
-    |> List.sort compare
+    |> BatSet.fold (fun node acc -> node :: acc)
+    |> fun f -> f []
+    |> List.append (api_model_nodes global)
+    |> List.sort_uniq compare
   in
   let nodes = if nodes = [] then InterCfg.nodesof global.Global.icfg else nodes in
   let input_tbl = Hashtbl.create (List.length nodes + 1) in
@@ -683,15 +915,26 @@ let staged_sparse_pipeline ~module_id ~source_file ~source_hash spec global acce
   in
   let predecessor_input node =
     let base = locs_for_node spec access dug node |> loc_list_of_powlocs |> List.map (fun loc -> static_or_input_cell spec loc []) in
-    DUGraph.pred node dug
-    |> List.fold_left (fun acc pred ->
-         match Hashtbl.find_opt output_tbl pred with
-         | None -> acc
-         | Some pred_mem ->
-             let joined, events = join_predecessor_memory pred_mem acc in
-             note_events events;
-             joined)
-         base
+    let from_dug =
+      DUGraph.pred node dug
+      |> List.fold_left (fun acc pred ->
+           match Hashtbl.find_opt output_tbl pred with
+           | None -> acc
+           | Some pred_mem ->
+               let joined, events = join_predecessor_memory pred_mem acc in
+               note_events events;
+               joined)
+           base
+    in
+    if supported_api_model_call global node then
+      Hashtbl.fold
+        (fun _ pred_mem acc ->
+          let joined, events = join_predecessor_memory pred_mem acc in
+          note_events events;
+          joined)
+        output_tbl
+        from_dug
+    else from_dug
   in
   let unstable_memory old_mem new_mem =
     let events = ref [] in

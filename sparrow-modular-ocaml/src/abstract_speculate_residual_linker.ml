@@ -246,6 +246,7 @@ let unique_declarations decls =
 
 let declaration_name_set decls = decls |> List.map (fun d -> d.name) |> sort_strings
 let has_name names name = List.exists ((=) name) names
+let residual_api_model_supported name = List.mem name [ "memcpy"; "strcpy"; "strlen" ]
 
 let declaration_kind_of_varinfo vi =
   match vi.Sparrow_cil.vtype with
@@ -281,6 +282,7 @@ let declarations_from_global global =
     !declarations
     |> unique_declarations
     |> List.filter (fun d -> not (has_name export_names d.name))
+    |> List.filter (fun d -> not (d.kind = "function" && residual_api_model_supported d.name))
   in
   imports, exports
 

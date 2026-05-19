@@ -26,6 +26,8 @@ let make_component
     ?guard_code
     ?(semantic_expression = transfer_event)
     ?(semantic_guard = transfer_event)
+    ?(residual_dependencies = [])
+    ?(derive_from_first_dependency = false)
     () =
   let residual_id =
     "residual-component:" ^ module_id ^ ":" ^ table ^ ":" ^ node ^ ":" ^ location ^ ":" ^ string_of_int ordinal
@@ -91,10 +93,42 @@ let make_component
     witness_constructor;
     default_row;
     default_component;
+    residual_dependencies;
+    derive_from_first_dependency;
     expression_code;
     guard_code;
     component_code;
   }
+
+let dependency_or_self component =
+  match component.T.residual_dependencies with
+  | [] ->
+      [
+        {
+          T.cell_table = component.T.table;
+          cell_node = component.T.node;
+          cell_location = component.T.location;
+        };
+      ]
+  | deps -> deps
+
+let rec dependency_reads state deps =
+  match deps with
+  | [] -> .<[]>.
+  | dep :: rest ->
+      let table_c = Lift.lift_string dep.T.cell_table in
+      let node_c = Lift.lift_string dep.T.cell_node in
+      let location_c = Lift.lift_string dep.T.cell_location in
+      let tail = dependency_reads state rest in
+      .<
+        (let cell_id =
+           T.make_residual_cell_id
+             ~cell_table:.~table_c
+             ~cell_node:.~node_c
+             ~cell_location:.~location_c
+         in
+         T.residual_state_read_int .~state cell_id)
+        :: .~tail>.
 
 let rec residual_equations components =
   match components with
@@ -104,15 +138,13 @@ let rec residual_equations components =
       let table_c = Lift.lift_string component.T.table in
       let node_c = Lift.lift_string component.T.node in
       let location_c = Lift.lift_string component.T.location in
-      let dependency_id =
-        {
-          T.cell_table = component.T.table;
-          cell_node = component.T.node;
-          cell_location = component.T.location;
-        }
+      let deps = dependency_or_self component in
+      let dependency_keys = List.map T.residual_cell_key deps in
+      let dependencies_c = Lift.lift_string_list dependency_keys in
+      let dependency_keys_c = Lift.lift_string_list dependency_keys in
+      let derive_from_first_dependency_c =
+        if component.T.derive_from_first_dependency then .<true>. else .<false>.
       in
-      let dependency_key = T.residual_cell_key dependency_id in
-      let dependencies_c = Lift.lift_string_list [dependency_key] in
       let apply = component.T.component_code in
       let tail = residual_equations rest in
       .<T.make_residual_equation
@@ -122,12 +154,18 @@ let rec residual_equations components =
           ~target_location:.~location_c
           ~dependencies:.~dependencies_c
           ~apply:(fun state input ->
-            ignore (T.residual_state_lookup state
-              (T.make_residual_cell_id
-                ~cell_table:.~table_c
-                ~cell_node:.~node_c
-                ~cell_location:.~location_c));
-            .~apply input)
+            let dependency_values = .~(dependency_reads .<state>. deps) in
+            let result = .~apply input in
+            if .~derive_from_first_dependency_c then
+              match dependency_values, .~dependency_keys_c with
+              | Some value :: _, dependency_key :: _ ->
+                  Stage2.override_result_value
+                    ~location:.~location_c
+                    ~dependency_key
+                    value
+                    result
+              | _ -> result
+            else result)
         :: .~tail>.
 
 let blind_witness ~static_input_rows ~static_output_rows ~residual_input_components ~residual_output_components ~control_components =

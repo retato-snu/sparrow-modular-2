@@ -26,6 +26,7 @@
   abstract_speculate_residual_linking_pe_check
   abstract_speculate_residual_linking_oracle_suite_dump
   abstract_speculate_residual_linking_oracle_suite_check
+  abstract_speculate_residual_api_model_check
   abstract_speculate_residual_memory_delta_unit
   abstract_speculate_residual_scalar_call_unit
   abstract_speculate_residual_solver_unit
@@ -141,7 +142,8 @@
   (alias real_sparrow_access_dug)
   (alias real_sparrow_sparse_fixpoint_pe)
   (alias real_sparrow_premerge_linked_observer)
-  (alias abstract_speculate_metaocaml_sparse_pe)))
+  (alias abstract_speculate_metaocaml_sparse_pe)
+  (alias abstract_speculate_residual_api_model_coverage)))
 
 (rule
  (alias real_sparrow_access_dug)
@@ -390,6 +392,25 @@
    (run ./abstract_speculate_residual_memory_delta_unit.bc)
    (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_linking_pe_dump.bc --module fixtures/abstract_speculate_residual_linking_pe/importer.c --module fixtures/abstract_speculate_residual_linking_pe/provider.c --out $root/_build/real-sparrow/abstract-speculate-residual-linking-pe/active")
    (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_linking_pe_check.bc --repo-root $root --artifact-dir $root/_build/real-sparrow/abstract-speculate-residual-linking-pe/active --report abstract_speculate_residual_linking_pe.report.json"))))
+
+(rule
+ (alias abstract_speculate_residual_api_model_coverage)
+ (targets abstract_speculate_residual_api_model_coverage.report.json)
+ (deps
+  abstract_speculate_pe_dump.bc
+  abstract_speculate_residual_api_model_check.bc
+  fixtures/abstract_speculate_residual_api_model/api_memcpy_importer.c
+  fixtures/abstract_speculate_residual_api_model/api_strcpy_importer.c
+  fixtures/abstract_speculate_residual_api_model/api_strlen_importer.c)
+ (action
+  (progn
+   (run bash -c "root=$(cd ../../.. && pwd); rm -rf $root/_build/real-sparrow/abstract-speculate-residual-api-model")
+   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_pe_dump.bc --module fixtures/abstract_speculate_residual_api_model/api_memcpy_importer.c --module fixtures/abstract_speculate_residual_api_model/api_strcpy_importer.c --module fixtures/abstract_speculate_residual_api_model/api_strlen_importer.c --out $root/_build/real-sparrow/abstract-speculate-residual-api-model/active")
+   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_api_model_check.bc --repo-root $root --artifact-dir $root/_build/real-sparrow/abstract-speculate-residual-api-model/active --report abstract_speculate_residual_api_model_coverage.report.json"))))
+
+(alias
+ (name abstract_speculate_residual_linking_pe)
+ (deps abstract_speculate_residual_api_model_coverage.report.json))
 
 (rule
  (alias abstract_speculate_residual_linking_oracle_suite)

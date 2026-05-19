@@ -15,6 +15,18 @@ type 'a ps =
   | S of 'a
   | D of 'a Trx.code
 
+type residual_cell_id = {
+  cell_table : string;
+  cell_node : string;
+  cell_location : string;
+}
+
+let make_residual_cell_id ~cell_table ~cell_node ~cell_location =
+  { cell_table; cell_node; cell_location }
+
+let residual_cell_key cell_id =
+  cell_id.cell_table ^ ":" ^ cell_id.cell_node ^ ":" ^ cell_id.cell_location
+
 type staged_residual_component = {
   residual_id : string;
   table : string;
@@ -27,22 +39,12 @@ type staged_residual_component = {
   witness_constructor : string;
   default_row : Yojson.Safe.t;
   default_component : Yojson.Safe.t;
+  residual_dependencies : residual_cell_id list;
+  derive_from_first_dependency : bool;
   expression_code : (stage2_input -> int) Trx.code;
   guard_code : (stage2_input -> bool) Trx.code;
   component_code : (stage2_input -> residual_component_result) Trx.code;
 }
-
-type residual_cell_id = {
-  cell_table : string;
-  cell_node : string;
-  cell_location : string;
-}
-
-let make_residual_cell_id ~cell_table ~cell_node ~cell_location =
-  { cell_table; cell_node; cell_location }
-
-let residual_cell_key cell_id =
-  cell_id.cell_table ^ ":" ^ cell_id.cell_node ^ ":" ^ cell_id.cell_location
 
 type residual_value = Yojson.Safe.t
 
@@ -124,6 +126,9 @@ type residual_analyzer = {
   blind_equality_witness : Yojson.Safe.t;
 }
 
+let residual_dependency_keys component =
+  List.map residual_cell_key component.residual_dependencies
+
 let component_to_yojson component =
   `Assoc [
     "id", `String component.residual_id;
@@ -139,6 +144,8 @@ let component_to_yojson component =
     "typed_code_present", `Bool true;
     "granularity", `String "cell-component";
     "row_wrapper", `Bool false;
+    "residual_dependencies", `List (List.map (fun dep -> `String dep) (residual_dependency_keys component));
+    "derive_from_first_dependency", `Bool component.derive_from_first_dependency;
     "default_component", component.default_component;
     "default_row", component.default_row;
   ]
@@ -158,6 +165,8 @@ let rec shape_witness_to_yojson = function
         "granularity", `String "cell-component";
         "paired_executable_code", `Bool true;
         "row_wrapper", `Bool false;
+        "residual_dependencies", `List (List.map (fun dep -> `String dep) (residual_dependency_keys component));
+        "derive_from_first_dependency", `Bool component.derive_from_first_dependency;
       ]
   | Loop_shape (id, guard_kind, body) ->
       `Assoc [

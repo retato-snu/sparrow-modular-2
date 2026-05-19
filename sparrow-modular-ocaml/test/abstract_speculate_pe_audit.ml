@@ -315,7 +315,8 @@ let implementation_evidence root =
        contains residual "T.D component.T.component_code" &&
        contains residual "residual_equations" &&
        contains residual "~apply:(fun state input ->" &&
-       contains residual "T.residual_state_lookup state" &&
+       (contains residual "T.residual_state_lookup state" ||
+       contains residual "T.residual_state_read_int .~state") &&
        contains residual ".~apply input")
       "Main residual path wires S/D component code into state-reading solver equations instead of reporting metadata only";
     evidence_item ~name:"residual_equations_read_solver_state"

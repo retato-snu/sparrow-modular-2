@@ -427,10 +427,39 @@ Not yet covered as general PE/linking semantics:
 
 Frozen Sparrow contains library/API semantics for many undefined or standard
 library calls, including string, memory, input, and allocation-related models.
-The current PE/linking path treats imported/unknown calls primarily as
+The current PE/linking path treats most imported/unknown calls primarily as
 extern/link obligations with validated stage-2 input or provider-derived linked
-effects.  It does not yet specialize and relink the full Sparrow API model
-surface.
+effects.  Slice 1 of residual API model coverage is intentionally narrower than
+the full Sparrow API surface: it covers exactly `memcpy`, `strcpy`, and
+`strlen`, and leaves every other library/API model as an explicit non-claim.
+
+The Slice 1 coverage matrix is:
+
+| API | Baseline ItvSem / ApiSem anchor | Abstract effect covered | Residual equation / cell target | Semantically upstream dependencies | Stage-2 seed and provenance | Positive fixture / witness | Negative mutation |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `memcpy` | `sparrow/src/semantics/itvSem.ml:482-492`; `sparrow/src/apiSem.ml:70-75`; dispatch through `sparrow-modular-ocaml/src/abstract_speculate_meta_sparse.ml:673-690` | Source array memory is copied into destination locations; assigned return tracks the destination with source-backed copy provenance. | Destination memory cells plus assigned return cell emit `api-residual-model-memcpy-created-D-during-transfer` residual components / equations. | Source memory cells selected from the `src` argument; target/self-only dependencies are invalid. | Validated stage-2 extern/link seed for the source value, `api_semantic_provenance=residual-api-model-coverage/slice-1`, baseline-source field, and final residual-cell provenance. | `sparrow-modular-ocaml/test/fixtures/abstract_speculate_residual_linking_pe/importer.c` + `sparrow-modular-ocaml/test/fixtures/abstract_speculate_residual_linking_pe/provider.c` as the current residual-linking PE witness bundle. | Reject missing state reads, empty dependencies, target/self-only dependencies, metadata-only API rows, unsupported-API coverage flags, and corrupted `memcpy` provenance. |
+| `strcpy` | `sparrow/src/semantics/itvSem.ml:510-522`; `sparrow/src/apiSem.ml:70-75`; dispatch through `sparrow-modular-ocaml/src/abstract_speculate_meta_sparse.ml:691-697` | Source string/null-position witness is copied into destination locations.  C-level return semantics are not claimed unless separate evidence proves them. | Destination string/null-position cells emit `api-residual-model-strcpy-created-D-during-transfer` residual components / equations. | Source string/null-position cells selected from the `src` argument; destination-only dependencies are invalid. | Validated stage-2 seed for the source null-position/value witness, `api_semantic_provenance=residual-api-model-coverage/slice-1`, baseline-source field, and final residual-cell provenance. | `sparrow-modular-ocaml/test/fixtures/abstract_speculate_residual_linking_pe/importer.c` + `sparrow-modular-ocaml/test/fixtures/abstract_speculate_residual_linking_pe/provider.c` as the current residual-linking PE witness bundle. | Reject missing source dependency, target/self-only dependencies, fabricated C-return claims, metadata-only API rows, unsupported-API coverage flags, and corrupted `strcpy` provenance. |
+| `strlen` | `sparrow/src/semantics/itvSem.ml:392-398`; `sparrow/src/apiSem.ml:103-107`; dispatch through `sparrow-modular-ocaml/src/abstract_speculate_meta_sparse.ml:698-709` | Return interval/value witness is derived from the source string null-position. | Assigned return cell emits `api-residual-model-strlen-created-D-during-transfer` residual component / equation. | Source string/null-position cell selected from the sole argument; return-cell-only dependencies are invalid. | Validated stage-2 seed for the source null-position/value witness, `api_semantic_provenance=residual-api-model-coverage/slice-1`, baseline-source field, and final residual-cell provenance. | `sparrow-modular-ocaml/test/fixtures/abstract_speculate_residual_linking_pe/importer.c` + `sparrow-modular-ocaml/test/fixtures/abstract_speculate_residual_linking_pe/provider.c` as the current residual-linking PE witness bundle. | Reject missing seed reads, empty dependencies, return/self-only dependencies, metadata-only API rows, unsupported-API coverage flags, and corrupted `strlen` provenance. |
+
+The required semantic chain for every row is:
+
+```text
+baseline ItvSem/ApiSem model
+  -> stage-1 residual API component with api_baseline_source
+  -> residual equation/cell target with exact upstream source dependencies
+  -> validated stage-2 seed read and solver-state read
+  -> final residual cell provenance
+  -> PE checker field assertion and oracle-suite full-Itv witness relation
+  -> negative mutation that fails closed
+```
+
+This slice deliberately does not claim coverage for `memmove`, `strncpy`,
+`strcat`, `strdup` / `xstrdup`, input-buffer APIs, `fgets`, `scanf`, generic
+allocation APIs, broad `ApiSem` entries, disabled `memset`, arbitrary-C API
+semantics, non-Itv product domains, whole-program equivalence, or a stable
+public API-summary schema.  Unsupported API rows must remain absent or marked
+unsupported; setting `covered_api=true` for an API outside `memcpy` / `strcpy` /
+`strlen` is a negative test case, not evidence.
 
 ### Solver and lattice coverage
 

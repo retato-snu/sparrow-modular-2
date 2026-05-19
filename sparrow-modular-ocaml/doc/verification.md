@@ -27,6 +27,30 @@ is installed; otherwise record the missing tool and rely on Dune/build checks
 plus review of the rendered Markdown table.
 
 
+
+## Residual API model coverage checklist
+
+Use this focused checklist when validating residual API model coverage for
+`memcpy`, `strcpy`, and `strlen` only:
+
+1. Confirm each coverage-matrix row names the baseline `ItvSem` / `ApiSem`
+   anchor, abstract effect, residual equation/cell target, upstream source
+   dependencies, stage-2 seed/provenance, positive fixture, and negative
+   mutation.
+2. Confirm residual equations read semantically upstream cells through solver
+   state; empty, target/self-only, or instrumentation-only dependencies fail.
+3. Confirm positive PE/oracle witnesses exist for all three APIs and expose
+   `api_baseline_source`, `api_abstract_effect`,
+   `api_semantic_provenance=residual-api-model-coverage/slice-1`, final cell
+   provenance, seed reads, state reads, and exact dependencies.
+4. Confirm negative mutations reject missing state reads, missing seed reads,
+   empty dependencies, target/self-only dependencies, metadata-only API rows,
+   unsupported optional APIs marked as covered, and corrupted provenance.
+5. Reconfirm unsupported APIs remain non-claims: `memmove`, `strncpy`, `strcat`,
+   `strdup` / `xstrdup`, input-buffer APIs, `fgets`, `scanf`, generic
+   allocation APIs, broad `ApiSem` entries, disabled `memset`, arbitrary-C API
+   semantics, non-Itv product domains, and whole-program equivalence.
+
 ## Typed residual scalar-call protocol checklist
 
 Use this focused checklist when validating changes for
