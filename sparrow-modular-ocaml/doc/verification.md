@@ -53,43 +53,29 @@ Use this checklist when validating the post-link residual-global worklist slice:
 1. Confirm linked artifacts expose `global_residual_fixpoint_run=true`,
    `global_residual_fixpoint_scope=post-link-whole-program-residual-cells`,
    `global_sparse_fixpoint_component=residual-global-worklist`, and
-   `global_sparse_fixpoint_source_level_rerun=false`.
-2. Confirm the global report has non-empty seed cells, derived cells, equations,
+   `global_sparse_fixpoint_source_level_rerun=true`.
+2. Confirm the report has validated rerun provenance:
+   `global_source_rerun_ready_for_relation_gate=true`,
+   `global_source_rerun_linked_context_consumed=true`, and non-empty
+   `global_source_rerun_validated_evidence` with module id, source file,
+   source hash, artifact path, linked-context consumption, and final-row counts.
+3. Confirm the global report has non-empty seed cells, derived cells, equations,
    dependency edges, cross-module dependency edges, worklist schedule, state
    reads, and seed reads, with `global_residual_worklist_drained=true` and
    `global_residual_overlay_only=false`.
-3. For cycle/SCC witnesses, confirm `global_residual_iteration_count > 1` and a
+4. For cycle/SCC witnesses, confirm `global_residual_iteration_count > 1` and a
    repeated `changed-cell-dependent` schedule entry.
-4. Confirm `full_itv_semantic_relation.global_residual_equivalence_status` is
+5. Confirm `full_itv_semantic_relation.global_residual_equivalence_status` is
    derived by the checker/reporting layer, not asserted by the linker module.
-5. Confirm negative cases reject metadata-only reports, non-recomputed derived
-   cells, missing dependencies/state reads, and undrained worklists.
-6. Reconfirm non-goals: no arbitrary-C theorem, no full source-level sparse
-   analyzer rerun, no Oct/OctImpact/product-domain generality, and no public
-   schema guarantee.
+6. Confirm negative cases reject metadata-only reports, missing rerun provenance,
+   source-rerun claims without linked-context consumption, missing dependencies/
+   state reads, and undrained worklists.
+7. Reconfirm non-goals: no arbitrary-C theorem, no Oct/OctImpact/product-domain
+   generality, no mechanized proof, and no public schema guarantee.
 
 
-## Whole-program residual-global fixpoint checklist
 
-Use this checklist when validating the post-link residual-global worklist slice:
 
-1. Confirm linked artifacts expose `global_residual_fixpoint_run=true`,
-   `global_residual_fixpoint_scope=post-link-whole-program-residual-cells`,
-   `global_sparse_fixpoint_component=residual-global-worklist`, and
-   `global_sparse_fixpoint_source_level_rerun=false`.
-2. Confirm the global report has non-empty seed cells, derived cells, equations,
-   dependency edges, cross-module dependency edges, worklist schedule, state
-   reads, and seed reads, with `global_residual_worklist_drained=true` and
-   `global_residual_overlay_only=false`.
-3. For cycle/SCC witnesses, confirm `global_residual_iteration_count > 1` and a
-   repeated `changed-cell-dependent` schedule entry.
-4. Confirm `full_itv_semantic_relation.global_residual_equivalence_status` is
-   derived by the checker/reporting layer, not asserted by the linker module.
-5. Confirm negative cases reject metadata-only reports, non-recomputed derived
-   cells, missing dependencies/state reads, and undrained worklists.
-6. Reconfirm non-goals: no arbitrary-C theorem, no full source-level sparse
-   analyzer rerun, no Oct/OctImpact/product-domain generality, and no public
-   schema guarantee.
 
 ## Residual API model coverage checklist
 

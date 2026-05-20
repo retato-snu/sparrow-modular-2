@@ -329,12 +329,33 @@ let provider_return_from_linked_output linked ~provider_module ~export_name =
          else None)
 
 let importer_dynamic_call_value linked ~importer_module ~extern_root =
+  let rerun_aliases =
+    list_field "module_logs" (member "execution_log" (linked_output linked))
+    |> List.filter (fun log -> string_field "module_id" log = importer_module)
+    |> List.concat_map (fun log ->
+           list_field "linked_extern_effects"
+             (member "post_link_source_rerun" (member "execution_log" log))
+           |> List.filter_map (fun eff ->
+                  match
+                    ( string_field "linked_original_node" eff,
+                      string_field "node" eff )
+                  with
+                  | original, fresh when original <> "" && fresh <> "" ->
+                      Some (original, fresh)
+                  | _ -> None))
+  in
+  let extern_roots =
+    extern_root
+    :: (rerun_aliases
+       |> List.filter_map (fun (original, fresh) ->
+              if original = extern_root then Some fresh else None))
+  in
   let rows = list_field "final_output_table" (linked_output linked) in
   rows
   |> List.find_map (fun row ->
          if
            string_field "linked_module_id" row = importer_module
-           && string_field "node" row = extern_root
+           && List.mem (string_field "node" row) extern_roots
          then
            row_memory row
            |> List.find_map (fun cell ->
@@ -491,9 +512,21 @@ let global_residual_evidence_failures witness_id residual =
        = "residual-global-worklist")
        "global_residual_component_mismatch" "global_residual_fixpoint.component"
   |> add
-       (not (bool_field "global_sparse_fixpoint_source_level_rerun" report))
-       "source_level_rerun_overclaim"
+       (bool_field "global_sparse_fixpoint_source_level_rerun" report)
+       "missing_source_level_rerun"
        "global_residual_fixpoint.source_level_rerun"
+  |> add
+       (bool_field "global_source_rerun_ready_for_relation_gate" report)
+       "source_level_rerun_not_validated"
+       "global_residual_fixpoint.source_rerun_gate"
+  |> add
+       (bool_field "global_source_rerun_linked_context_consumed" report)
+       "source_level_rerun_missing_linked_context"
+       "global_residual_fixpoint.source_rerun_linked_context"
+  |> add
+       (list_field "global_source_rerun_validated_evidence" report <> [])
+       "missing_source_level_rerun_evidence"
+       "global_residual_fixpoint.source_rerun_evidence"
   |> add (seed_cells <> []) "missing_global_residual_seed_cells"
        "global_residual_seed_cells"
   |> add (derived_cells <> []) "missing_global_residual_derived_cells"

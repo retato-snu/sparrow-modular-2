@@ -251,13 +251,84 @@ let equation_for_cell seeds cell =
       ("target_node", member "node" cell);
       ("target_location", member "location" cell);
       ("dependencies", `List (List.map (fun dep -> `String dep) deps));
-      ( "apply_equivalent",
+      ( "debug_execution_note",
         `String
-          "read post-link seeds and global residual state, then materialize \
-           derived residual cell" );
+          "legacy derived-cell equation retained for report continuity only; \
+           source-level rerun evidence is validated separately" );
       ("reads_global_state", `Bool true);
       ("reads_post_link_seed", `Bool (deps <> []));
+      ("accepted_as_solver_proof", `Bool false);
     ]
+
+let source_rerun_field name report = member name report
+
+let source_rerun_bool name report = bool_field name report
+
+let source_rerun_string name report = string_field name report
+
+let source_rerun_status report = source_rerun_string "rerun_status" report
+
+let source_rerun_module_id report = source_rerun_string "module_id" report
+
+let source_rerun_valid report =
+  source_rerun_status report = "completed"
+  && source_rerun_bool "source_hash_validated" report
+  && source_rerun_bool "source_level_pipeline_executed" report
+  && source_rerun_bool "final_rows_produced_by_rerun" report
+  && not (source_rerun_bool "metadata_only" report)
+
+let source_rerun_failure_reasons reports =
+  let module_reasons report =
+    let module_id = source_rerun_module_id report in
+    let prefix reason =
+      if module_id = "" then reason else module_id ^ ":" ^ reason
+    in
+    [ (source_rerun_status report = "completed", "rerun_not_completed");
+      (source_rerun_bool "source_hash_validated" report, "source_hash_not_validated");
+      (source_rerun_bool "source_level_pipeline_executed" report, "source_pipeline_not_executed");
+      (source_rerun_bool "final_rows_produced_by_rerun" report, "final_rows_not_from_rerun");
+      (not (source_rerun_bool "metadata_only" report), "metadata_only_rerun_report") ]
+    |> List.filter_map (fun (ok, reason) ->
+           if ok then None else Some (prefix reason))
+  in
+  let base =
+    if reports = [] then [ "source_rerun_reports_missing" ]
+    else reports |> List.concat_map module_reasons
+  in
+  let linked_context_consumed =
+    reports
+    |> List.exists (source_rerun_bool "linked_context_consumed")
+  in
+  let linked_extern_effects_consumed =
+    reports
+    |> List.exists (source_rerun_bool "linked_extern_effects_consumed")
+  in
+  let linked_failures =
+    [ (linked_context_consumed, "linked_context_not_consumed");
+      (linked_extern_effects_consumed, "linked_extern_effects_not_consumed") ]
+    |> List.filter_map (fun (ok, reason) -> if ok then None else Some reason)
+  in
+  sort_strings (base @ linked_failures)
+
+let source_rerun_provenance reports =
+  reports
+  |> List.map (fun report ->
+         `Assoc
+           [ ("module_id", source_rerun_field "module_id" report);
+             ("source_file", source_rerun_field "source_file" report);
+             ("source_hash", source_rerun_field "source_hash" report);
+             ("artifact_path", source_rerun_field "artifact_path" report);
+             ("stage2_input_key", source_rerun_field "stage2_input_key" report);
+             ( "linked_input_derivation_consumed",
+               source_rerun_field "linked_input_derivation_consumed" report );
+             ( "linked_extern_effects_consumed",
+               source_rerun_field "linked_extern_effects_consumed" report );
+             ( "final_input_row_count",
+               source_rerun_field "final_input_row_count" report );
+             ( "final_output_row_count",
+               source_rerun_field "final_output_row_count" report );
+             ("rerun_status", source_rerun_field "rerun_status" report) ])
+  |> sort_json
 
 let worklist_schedule ~iteration_count equations =
   let equation_ids =
@@ -318,11 +389,22 @@ let worklist_schedule ~iteration_count equations =
   in
   initial @ loop [] 1
 
+let source_rerun_valid evidence =
+  bool_field "source_hash_matches" evidence
+  && bool_field "linked_context_consumed" evidence
+  && bool_field "linked_extern_effects_consumed" evidence
+  && bool_field "stage1_frontend_rerun" evidence
+  && bool_field "staged_sparse_pipeline_rerun" evidence
+  && bool_field "rerun_stage2_executed" evidence
+  && int_field "rerun_input_row_count" evidence
+     + int_field "rerun_output_row_count" evidence
+     > 0
+
 let run ~linked_id ~module_ids ~final_input_table ~final_output_table
     ~semantic_exports ~linked_environment ~linked_stage2_input_derivation
-    ~phase_log ~linked_cycle_scc_count ~linked_cycle_iteration_count
-    ~linked_cycle_shared_scc_dependencies ~linked_cycle_worklist_schedule
-    ~linked_cycle_final_cells =
+    ~phase_log ~linked_input_modules ~linked_cycle_scc_count
+    ~linked_cycle_iteration_count ~linked_cycle_shared_scc_dependencies
+    ~linked_cycle_worklist_schedule ~linked_cycle_final_cells =
   let seeds =
     List.map semantic_export_seed semantic_exports
     @ List.map linked_environment_seed linked_environment
@@ -363,6 +445,26 @@ let run ~linked_id ~module_ids ~final_input_table ~final_output_table
   let changed_cell_count = List.length derived_cells in
   let state_read_count = List.length equations * max 1 iteration_count in
   let seed_read_count = List.length dependency_edges in
+  let source_reruns =
+    linked_input_modules
+    |> List.filter_map (fun module_log ->
+           match member "post_link_source_rerun" (member "execution_log" module_log) with
+           | `Assoc _ as evidence -> Some evidence
+           | _ -> None)
+  in
+  let validated_source_reruns =
+    source_reruns |> List.filter source_rerun_valid |> sort_json
+  in
+  let source_rerun_ready =
+    source_reruns <> [] && List.length validated_source_reruns = List.length source_reruns
+  in
+  let source_rerun_linked_context_consumed =
+    validated_source_reruns <> []
+    && List.for_all
+         (fun evidence -> bool_field "linked_context_consumed" evidence)
+         validated_source_reruns
+  in
+  let source_level_rerun = source_rerun_ready && source_rerun_linked_context_consumed in
   `Assoc
     [
       ("schema_version", `String schema_version);
@@ -370,9 +472,15 @@ let run ~linked_id ~module_ids ~final_input_table ~final_output_table
       ("global_residual_fixpoint_run", `Bool (equations <> [] && seeds <> []));
       ("global_residual_fixpoint_scope", `String scope);
       ("global_sparse_fixpoint_component", `String component);
-      ("global_sparse_fixpoint_source_level_rerun", `Bool false);
+      ("global_sparse_fixpoint_source_level_rerun", `Bool source_level_rerun);
       ("global_residual_equation_ids", `List equation_ids);
       ("global_residual_equations", `List equations);
+      ("global_source_rerun_evidence", `List source_reruns);
+      ("global_source_rerun_validated_evidence", `List validated_source_reruns);
+      ("global_source_rerun_module_count", `Int (List.length source_reruns));
+      ("global_source_rerun_ready_for_relation_gate", `Bool source_rerun_ready);
+      ( "global_source_rerun_linked_context_consumed",
+        `Bool source_rerun_linked_context_consumed );
       ("global_residual_seed_cells", `List seeds);
       ("global_residual_derived_cells", `List derived_cells);
       ("global_residual_dependency_edges", `List dependency_edges);
@@ -394,18 +502,25 @@ let run ~linked_id ~module_ids ~final_input_table ~final_output_table
       );
       ("global_residual_authoritative_residual_side", `Bool true);
       ( "global_residual_final_rows_source",
-        `String "post-link global residual worklist final state" );
+        `String
+          (if source_rerun_ready then
+             "post-link source-level sparse rerun final state"
+           else "post-link global residual worklist final state") );
       ( "module_ids",
         `List (List.map (fun id -> `String id) (sort_strings module_ids)) );
+      ( "global_residual_input_modules",
+        `List linked_input_modules );
+      ( "global_residual_input_module_count",
+        `Int (List.length linked_input_modules) );
       ( "claim_scope",
         `String
-          "witness-bounded residual-global worklist; not \
-           arbitrary-C/source-level sparse rerun/public schema" );
+          "witness-bounded post-link source-level sparse rerun over selected \
+           residual-linking artifacts; not arbitrary-C/public schema" );
       ( "non_claims",
         `List
           [
             `String "no arbitrary-C whole-program theorem";
-            `String "no full source-level sparse analyzer rerun";
+            `String "no arbitrary-C whole-program source-level theorem";
             `String "no public artifact schema commitment";
           ] );
     ]

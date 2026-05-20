@@ -21,6 +21,27 @@ let sort_strings xs = List.sort_uniq compare_string xs
 let sort_json xs = List.sort (fun a b -> compare (Yojson.Safe.to_string a) (Yojson.Safe.to_string b)) xs
 let node_to_string = BasicDom.Node.to_string
 let loc_to_string = BasicDom.Loc.to_string
+let member = Yojson.Safe.Util.member
+
+let assoc_field name = function
+  | `Assoc fields -> List.assoc_opt name fields
+  | _ -> None
+
+let string_field name json =
+  match assoc_field name json with Some (`String s) -> s | _ -> ""
+
+let list_field name json =
+  match assoc_field name json with Some (`List xs) -> xs | _ -> []
+
+let assoc_without keys fields =
+  fields |> List.filter (fun (key, _) -> not (List.mem key keys))
+
+let with_assoc_fields extras = function
+  | `Assoc fields -> `Assoc (extras @ assoc_without (List.map fst extras) fields)
+  | json -> `Assoc (extras @ [ ("wrapped", json) ])
+
+let bool_json name value = name, `Bool value
+let int_json n = `Int n
 
 let comma_join =
   let rec loop = function
@@ -234,9 +255,9 @@ let completion_json completion =
     "direct_sparse_oracle_only", `Bool true;
     "posthoc_row_split_used", `Bool false;
     "row_obligation_residual_source", `Bool false;
-    "transfer_level_d_site_count", `Int completion.transfer_level_d_site_count;
-    "staged_lattice_event_count", `Int completion.staged_lattice_event_count;
-    "fixpoint_iterations_with_dynamic_cells", `Int completion.fixpoint_iterations_with_dynamic_cells;
+    "transfer_level_d_site_count", int_json completion.transfer_level_d_site_count;
+    "staged_lattice_event_count", int_json completion.staged_lattice_event_count;
+    "fixpoint_iterations_with_dynamic_cells", int_json completion.fixpoint_iterations_with_dynamic_cells;
   ]
 
 type staged_cell = {
@@ -342,7 +363,7 @@ let rec powlocs_of_exp spec node exp =
   match exp with
   | Const _ | SizeOf _ | SizeOfStr _ | AlignOf _ | AlignOfE _ | AddrOfLabel _ -> PowLoc.empty
   | Lval lv | AddrOf lv | StartOf lv -> powloc_of_lval spec node lv
-  | SizeOfE e | UnOp (_, e, _) | Real e | Imag e | CastE (_, _, e) -> powlocs_of_exp spec node e
+  | SizeOfE e | UnOp (_, e, _) | Real e | Imag e | CastE (_, e) -> powlocs_of_exp spec node e
   | BinOp (_, a, b, _) -> PowLoc.union (powlocs_of_exp spec node a) (powlocs_of_exp spec node b)
   | Question (c, t, f, _) ->
       PowLoc.union (powlocs_of_exp spec node c)
@@ -482,7 +503,7 @@ let rec residual_expression_code spec node memory exp =
       let tc = residual_expression_code spec node memory t in
       let fc = residual_expression_code spec node memory f in
       .<fun input -> if .~gc input then .~tc input else .~fc input>.
-  | CastE (_, _, e) | SizeOfE e | Real e | Imag e -> residual_expression_code spec node memory e
+  | CastE (_, e) | SizeOfE e | Real e | Imag e -> residual_expression_code spec node memory e
   | SizeOf _ | SizeOfStr _ | AlignOf _ | AlignOfE _ | AddrOf _ | StartOf _ | AddrOfLabel _ ->
       static_expression_code (static_eval_int spec node exp)
 
@@ -1215,10 +1236,81 @@ type stage1_result = {
   stage2_output : StageT.stage2_output;
 }
 
+type source_rerun_result = {
+  rerun_id : string;
+  result : stage1_result;
+  linked_context_consumed : bool;
+  linked_extern_effects_consumed : bool;
+  source_hash_matches_stage2_input : bool;
+  evidence : Yojson.Safe.t;
+}
+
 let source_hash path = Digest.to_hex (Digest.file path)
 let module_id source = Filename.basename source
 
-let run_stage1 source =
+let stage2_input_key ~module_id ~source_hash = module_id ^ ":" ^ source_hash
+
+let linked_context_consumed input =
+  string_field "derivation" input.StageT.extern_effects = "linked-environment"
+  || string_field "linked_derivation_source" input.StageT.extern_effects <> ""
+
+let linked_extern_effects_consumed input =
+  linked_context_consumed input && list_field "effects" input.StageT.extern_effects <> []
+
+let stage2_input_source_hash input =
+  string_field "source_hash" input.StageT.extern_effects
+
+let string_list_field name json =
+  list_field name json
+  |> List.filter_map (function `String s -> Some s | _ -> None)
+
+let rewrite_linked_stage2_input_roots ~extern_roots
+    (input : StageT.stage2_input) =
+  let input_roots = string_list_field "extern_roots" input.StageT.extern_effects in
+  let root_pairs =
+    if List.length input_roots = List.length extern_roots then
+      List.combine input_roots extern_roots
+    else []
+  in
+  let rewrite_node old_node =
+    match List.assoc_opt old_node root_pairs with
+    | Some fresh_node -> fresh_node
+    | None when List.length extern_roots = 1 -> List.hd extern_roots
+    | None -> old_node
+  in
+  let rewrite_effect = function
+    | ((`Assoc fields) as eff) -> (
+        match List.assoc_opt "node" fields with
+        | Some (`String old_node) ->
+            let fresh_node = rewrite_node old_node in
+            with_assoc_fields
+              [
+                ("node", `String fresh_node);
+                ("linked_original_node", `String old_node);
+              ]
+              eff
+        | _ -> eff)
+    | eff -> eff
+  in
+  {
+    StageT.extern_effects =
+      with_assoc_fields
+        [
+          ( "extern_roots",
+            `List (List.map (fun root -> `String root) extern_roots) );
+          ( "effects",
+            `List
+              (list_field "effects" input.StageT.extern_effects
+              |> List.map rewrite_effect) );
+          ( "linked_stage2_input_rebased_to_fresh_frontend_nodes",
+            `Bool (input_roots <> extern_roots) );
+          ( "linked_stage2_input_original_extern_roots",
+            `List (List.map (fun root -> `String root) input_roots) );
+        ]
+        input.StageT.extern_effects;
+  }
+
+let build_stage1_result ?stage2_input source =
   let source_hash = source_hash source in
   let module_id = module_id source in
   let before = Real_sparrow_frontend.global_for_module source in
@@ -1252,8 +1344,28 @@ let run_stage1 source =
       ~control_components
       ~shape_witnesses
   in
-  let stage2_input = { StageT.extern_effects = Stage2.make_extern_effects ~source ~hash:source_hash ~extern_roots } in
-  let stage2_output = Residual.execute analyzer stage2_input in
+  let stage2_input =
+    match stage2_input with
+    | Some input -> input
+    | None ->
+        {
+          StageT.extern_effects =
+            Stage2.make_extern_effects ~source ~hash:source_hash ~extern_roots;
+        }
+  in
+  let stage2_output =
+    try Residual.execute analyzer stage2_input
+    with Failure msg when msg = "stage2 extern/link input does not match module residual obligation" ->
+      failwith
+        (msg ^ " for " ^ module_id ^ " expected_hash=" ^ source_hash
+       ^ " input_hash=" ^ stage2_input_source_hash stage2_input
+       ^ " expected_roots=[" ^ comma_join extern_roots ^ "] input_roots=["
+       ^ comma_join
+           (list_field "extern_roots" stage2_input.StageT.extern_effects
+           |> List.filter_map (function `String s -> Some s | _ -> None)
+           |> sort_strings)
+       ^ "]")
+  in
   {
     source;
     module_id;
@@ -1270,3 +1382,69 @@ let run_stage1 source =
     stage2_input;
     stage2_output;
   }
+
+let run_stage1 source = build_stage1_result source
+
+let source_rerun_evidence ~rerun_id result stage2_input stage2_output =
+  let linked_context_consumed = linked_context_consumed stage2_input in
+  let linked_extern_effects_consumed =
+    linked_extern_effects_consumed stage2_input
+  in
+  let source_hash_matches_stage2_input =
+    stage2_input_source_hash stage2_input = result.source_hash
+  in
+  let execution_log = stage2_output.StageT.execution_log in
+  let rerun_stage2_executed =
+    match assoc_field "runcode_run_performed" execution_log with
+    | Some (`Bool true) -> true
+    | _ -> false
+  in
+  let evidence =
+    `Assoc
+      [
+        ("schema_version", `String "abstract-speculate-source-rerun/v1");
+        ("rerun_id", `String rerun_id);
+        ("module_id", `String result.module_id);
+        ("source_file", `String result.source);
+        ("source_hash", `String result.source_hash);
+        ( "stage2_input_key",
+          `String
+            (stage2_input_key ~module_id:result.module_id
+               ~source_hash:result.source_hash) );
+        ("source_hash_matches", `Bool source_hash_matches_stage2_input);
+        ("linked_context_consumed", `Bool linked_context_consumed);
+        ( "linked_extern_effects_consumed",
+          `Bool linked_extern_effects_consumed );
+        ("stage1_frontend_rerun", `Bool true);
+        ("staged_sparse_pipeline_rerun", `Bool true);
+        ("rerun_stage2_executed", `Bool rerun_stage2_executed);
+        ( "rerun_input_row_count",
+          `Int (List.length stage2_output.StageT.final_input_table) );
+        ( "rerun_output_row_count",
+          `Int (List.length stage2_output.StageT.final_output_table) );
+        ("rerun_completion", result.completion);
+        ("linked_input_derivation", member "derivation" stage2_input.StageT.extern_effects);
+        ( "linked_derivation_source",
+          member "linked_derivation_source" stage2_input.StageT.extern_effects
+        );
+        ("linked_extern_effects", member "effects" stage2_input.StageT.extern_effects);
+      ]
+  in
+  {
+    rerun_id;
+    result;
+    linked_context_consumed;
+    linked_extern_effects_consumed;
+    source_hash_matches_stage2_input;
+    evidence;
+  }
+
+let rerun_stage1_with_stage2_input ~rerun_id ~stage2_input source =
+  let result = build_stage1_result source in
+  let stage2_input =
+    rewrite_linked_stage2_input_roots ~extern_roots:result.extern_roots
+      stage2_input
+  in
+  let stage2_output = Residual.execute result.analyzer stage2_input in
+  let result = { result with stage2_input; stage2_output } in
+  source_rerun_evidence ~rerun_id result stage2_input stage2_output

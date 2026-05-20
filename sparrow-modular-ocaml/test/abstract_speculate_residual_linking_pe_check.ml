@@ -358,8 +358,17 @@ let require_global_residual_fixpoint linked =
     = "residual-global-worklist")
     "global residual sparse component mismatch";
   expect
-    (bool_field "global_sparse_fixpoint_source_level_rerun" report = false)
-    "global residual report overclaimed source-level sparse rerun";
+    (bool_field "global_sparse_fixpoint_source_level_rerun" report)
+    "global residual report did not record source-level sparse rerun";
+  expect
+    (bool_field "global_source_rerun_ready_for_relation_gate" report)
+    "global residual report missing validated source rerun gate";
+  expect
+    (bool_field "global_source_rerun_linked_context_consumed" report)
+    "global residual source rerun did not consume linked context";
+  expect
+    (list_field "global_source_rerun_validated_evidence" report <> [])
+    "global residual report has no validated source rerun evidence";
   expect (seed_cells <> []) "global residual report has no seed cells";
   expect (derived_cells <> []) "global residual report has no derived cells";
   expect

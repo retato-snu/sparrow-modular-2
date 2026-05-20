@@ -34,7 +34,7 @@ and s_exp : exp -> string = function
   | BinOp (b, e1, e2, _) -> s_exp_paren e1 ^ s_bop b ^ s_exp_paren e2
   | Question (c, e1, e2, _) ->
     s_exp_paren c ^ " ? " ^ s_exp_paren e1 ^ " : " ^ s_exp_paren e2
-  | CastE (_, t, e) -> "(" ^ s_type t ^ ")" ^ s_exp_paren e
+  | CastE (t, e) -> "(" ^ s_type t ^ ")" ^ s_exp_paren e
   | AddrOf l -> "&" ^ s_lv l
   | AddrOfLabel _ -> invalid_arg "AddrOfLabel is not supported."
   | StartOf l -> "StartOf(" ^ s_lv l ^ ")"
@@ -134,8 +134,8 @@ let not_binop : binop -> binop = fun op ->
 let rec make_cond_simple : exp -> exp option
 = fun cond ->
   match cond with
-  | BinOp (op, CastE (_, _, e1), e2, t)
-  | BinOp (op, e1, CastE (_, _, e2), t) ->
+  | BinOp (op, CastE (_, e1), e2, t)
+  | BinOp (op, e1, CastE (_, e2), t) ->
     let newe = BinOp (op, e1, e2, t) in
     make_cond_simple newe
   | BinOp (op, Lval _, _, _)
@@ -164,7 +164,7 @@ let rec make_cond_simple : exp -> exp option
   | _ -> None
 
 let rec remove_cast = function
-    Sparrow_cil.CastE (_, _, e) -> remove_cast e
+    Sparrow_cil.CastE (_, e) -> remove_cast e
   | Sparrow_cil.BinOp (b, e1, e2, t) -> Sparrow_cil.BinOp(b, remove_cast e1, remove_cast e2, t)
   | Sparrow_cil.UnOp (u, e, t) -> Sparrow_cil.UnOp (u, remove_cast e, t)
   | e -> e

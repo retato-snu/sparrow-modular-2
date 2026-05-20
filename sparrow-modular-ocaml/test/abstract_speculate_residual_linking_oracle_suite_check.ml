@@ -646,7 +646,10 @@ let global_residual_fixpoint_evidence_passes witness_id residual =
     "post-link-whole-program-residual-cells" &&
   string_evidence_field "global_sparse_fixpoint_component" residual =
     "residual-global-worklist" &&
-  not (bool_evidence_field "global_sparse_fixpoint_source_level_rerun" residual) &&
+  bool_evidence_field "global_sparse_fixpoint_source_level_rerun" residual &&
+  bool_evidence_field "global_source_rerun_ready_for_relation_gate" residual &&
+  bool_evidence_field "global_source_rerun_linked_context_consumed" residual &&
+  list_evidence_field "global_source_rerun_validated_evidence" residual <> [] &&
   list_evidence_field "global_residual_equation_ids" residual <> [] &&
   list_evidence_field "global_residual_seed_cells" residual <> [] &&
   list_evidence_field "global_residual_derived_cells" residual <> [] &&
@@ -1067,7 +1070,10 @@ let global_residual_evidence_passes witness_id residual =
      = "post-link-whole-program-residual-cells"
   && string_field "global_sparse_fixpoint_component" report
      = "residual-global-worklist"
-  && bool_field "global_sparse_fixpoint_source_level_rerun" report = false
+  && bool_field "global_sparse_fixpoint_source_level_rerun" report
+  && bool_field "global_source_rerun_ready_for_relation_gate" report
+  && bool_field "global_source_rerun_linked_context_consumed" report
+  && list_field "global_source_rerun_validated_evidence" report <> []
   && seed_cells <> [] && derived_cells <> [] && equations <> []
   && dependency_edges <> [] && cross_edges <> []
   && List.for_all (fun edge -> bool_field "cross_module" edge) cross_edges
@@ -1969,6 +1975,51 @@ let negative_cases witnesses =
     |> set_path ["global_residual_worklist_drained"] (`Bool true)
     |> set_path ["global_residual_overlay_only"] (`Bool false)
   in
+  let source_level_rerun_claim_without_provenance residual =
+    residual
+    |> set_path ["global_sparse_fixpoint_source_level_rerun"] (`Bool true)
+    |> set_path ["global_source_rerun_ready_for_relation_gate"] (`Bool false)
+    |> set_path ["global_source_rerun_validated_evidence"] (`List [])
+    |> set_path ["global_source_rerun_evidence"] (`List [])
+    |> set_path ["global_source_rerun_linked_context_consumed"] (`Bool false)
+  in
+  let apply_equivalent_only_global_report residual =
+    residual
+    |> set_path ["global_residual_fixpoint_run"] (`Bool true)
+    |> set_path ["global_residual_fixpoint_scope"]
+         (`String "post-link-whole-program-residual-cells")
+    |> set_path ["global_sparse_fixpoint_component"]
+         (`String "residual-global-worklist")
+    |> set_path ["global_sparse_fixpoint_source_level_rerun"] (`Bool false)
+    |> set_path ["global_residual_equation_ids"]
+         (`List [`String "string-only-apply-equivalent"])
+    |> set_path ["global_residual_equations"]
+         (`List
+            [
+              `Assoc
+                [
+                  ("equation_id", `String "string-only-apply-equivalent");
+                  ("apply_equivalent", `String "descriptive string only");
+                ];
+            ])
+    |> set_path ["global_residual_seed_cells"] (`List [])
+    |> set_path ["global_residual_derived_cells"] (`List [])
+    |> set_path ["global_residual_dependency_edges"] (`List [])
+    |> set_path ["global_residual_cross_module_dependency_edges"] (`List [])
+    |> set_path ["global_residual_worklist_schedule"] (`List [])
+    |> set_path ["global_residual_final_cells"] (`List [])
+    |> set_path ["global_residual_final_rows"] (`List [])
+    |> set_path ["global_residual_final_input_table"] (`List [])
+    |> set_path ["global_residual_final_output_table"] (`List [])
+    |> set_path ["global_residual_final_cell_rows"] (`List [])
+  in
+  let source_level_rerun_without_linked_context residual =
+    residual
+    |> set_path ["global_sparse_fixpoint_source_level_rerun"] (`Bool true)
+    |> set_path ["global_source_rerun_ready_for_relation_gate"] (`Bool false)
+    |> set_path ["global_source_rerun_linked_context_consumed"] (`Bool false)
+    |> set_path ["global_source_rerun_validated_evidence"] (`List [])
+  in
   let set_final_round_changed residual =
     let rounds = list_field "linked_cycle_rounds" residual in
     match List.rev rounds with
@@ -2171,6 +2222,12 @@ let negative_cases witnesses =
       (callgraph_scheduler_evidence_fails scheduler_dependency_only_relabel);
     false_case "global_residual_metadata_only_report_rejected"
       (global_evidence_fails metadata_only_global_report);
+    false_case "global_source_rerun_claim_without_provenance_rejected"
+      (global_evidence_fails source_level_rerun_claim_without_provenance);
+    false_case "global_residual_apply_equivalent_only_rejected"
+      (global_evidence_fails apply_equivalent_only_global_report);
+    false_case "global_source_rerun_without_linked_context_rejected"
+      (global_evidence_fails source_level_rerun_without_linked_context);
     false_case "global_residual_missing_dependencies_rejected"
       (global_evidence_fails (set_path ["global_residual_dependency_edges"] (`List [])));
     false_case "global_residual_missing_cross_module_dependencies_rejected"

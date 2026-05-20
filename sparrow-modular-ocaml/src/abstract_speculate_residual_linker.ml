@@ -41,6 +41,13 @@ let assoc_field name = function
   | `Assoc fields -> List.assoc_opt name fields
   | _ -> None
 
+let assoc_without keys fields =
+  fields |> List.filter (fun (key, _) -> not (List.mem key keys))
+
+let add_assoc_fields extras = function
+  | `Assoc fields -> `Assoc (extras @ assoc_without (List.map fst extras) fields)
+  | json -> `Assoc (extras @ [ ("wrapped", json) ])
+
 let string_field name json =
   match assoc_field name json with Some (`String s) -> Some s | _ -> None
 
@@ -360,6 +367,20 @@ let input_module_json bundle =
       ("typed_analyzer_present", `Bool true);
       ("module_boundary_validated", `Bool bundle.module_boundary_validated);
     ]
+
+let source_rerun_evidence_for_bundle bundle rerun =
+  let rerun_result = rerun.MetaSparse.result in
+  add_assoc_fields
+    [
+      ("artifact_path", `String bundle.artifact_path);
+      ( "module_artifact_source_hash",
+        `String bundle.result.MetaSparse.source_hash );
+      ( "module_artifact_hash_matches_rerun",
+        `Bool
+          (bundle.result.MetaSparse.source_hash
+          = rerun_result.MetaSparse.source_hash) );
+    ]
+    rerun.MetaSparse.evidence
 
 let validate_module_artifact artifact =
   let boundary = member "module_boundary" artifact in
@@ -1738,7 +1759,32 @@ let execute_modules modules inputs =
     in
     let phase_index = phase_index + if env_events = [] then 0 else 1 in
     let output : StageT.stage2_output =
-      Residual.execute bundle.result.analyzer input
+      if linked_inputs && is_importer then
+        let rerun_id =
+          "post-link-source-rerun:" ^ module_id ^ ":"
+          ^ bundle.result.MetaSparse.source_hash
+        in
+        let rerun =
+          MetaSparse.rerun_stage1_with_stage2_input ~rerun_id
+            ~stage2_input:input bundle.result.MetaSparse.source
+        in
+        let rerun_result = rerun.MetaSparse.result in
+        if rerun_result.MetaSparse.source_hash
+           <> bundle.result.MetaSparse.source_hash
+        then
+          failwith
+            ("post-link source rerun source hash mismatch for " ^ module_id);
+        {
+          rerun_result.MetaSparse.stage2_output with
+          StageT.execution_log =
+            add_assoc_fields
+              [
+                ( "post_link_source_rerun",
+                  source_rerun_evidence_for_bundle bundle rerun );
+              ]
+              rerun_result.MetaSparse.stage2_output.StageT.execution_log;
+        }
+      else Residual.execute bundle.result.analyzer input
     in
     let execution_event =
       if linked_inputs && is_importer then
@@ -2333,6 +2379,7 @@ let execute_modules modules inputs =
       ~linked_environment:
         (List.map linked_environment_entry_to_json linked_environment)
       ~linked_stage2_input_derivation
+      ~linked_input_modules:module_logs
       ~phase_log:(List.map phase_event_to_json phase_log)
       ~linked_cycle_scc_count ~linked_cycle_iteration_count
       ~linked_cycle_shared_scc_dependencies

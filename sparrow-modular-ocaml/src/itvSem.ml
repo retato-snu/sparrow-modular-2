@@ -181,7 +181,7 @@ and eval ?(spec=Spec.empty) : Proc.t -> Sparrow_cil.exp -> Mem.t -> Val.t
     else
       Val.join (eval ~spec pid e2 mem) (eval ~spec pid e3 mem)
   | Sparrow_cil.Real e | Sparrow_cil.Imag e -> Val.of_itv Itv.top
-  | Sparrow_cil.CastE (_, t, e) ->
+  | Sparrow_cil.CastE (t, e) ->
     let v = eval ~spec pid e mem in
     (try Val.cast (Sparrow_cil.typeOf e) t v with _ -> v)
   | Sparrow_cil.AddrOf l -> eval_lv ~spec pid l mem |> Val.of_pow_loc
@@ -410,7 +410,7 @@ let rec model_fgets mode spec pid (lvo, exps) (mem, global) =
     |> update mode spec global buf_lv buf_val
     |> update mode spec global allocsites Val.itv_top
     |> (fun mem -> (mem, global))
-  | (_, CastE (_, _, buf)::size::e) -> model_fgets mode spec pid (lvo, buf::size::e) (mem, global)
+  | (_, CastE (_, buf)::size::e) -> model_fgets mode spec pid (lvo, buf::size::e) (mem, global)
   | _ -> (mem,global)
 
 let rec model_sprintf mode spec pid (lvo, exps) (mem, global) =
@@ -427,8 +427,8 @@ let rec model_sprintf mode spec pid (lvo, exps) (mem, global) =
     |> update mode spec global allocsites (lookup arrays mem)
     |> (match lvo with Some lv -> update mode spec global (eval_lv ~spec pid lv mem) (Val.of_itv null_pos) | _ -> id)
     |> (fun mem -> (mem, global))
-  | CastE (_, _, buf)::str::[]
-  | buf::CastE (_, _, str)::[] -> model_sprintf mode spec pid (lvo, buf::str::[]) (mem, global)
+  | CastE (_, buf)::str::[]
+  | buf::CastE (_, str)::[] -> model_sprintf mode spec pid (lvo, buf::str::[]) (mem, global)
   | _ ->
     begin
       match lvo with
@@ -509,8 +509,8 @@ let model_getpwent mode spec node pid lvo f (mem,global) =
 
 let rec model_strcpy mode spec node pid es (mem, global) =
   match es with
-    (CastE (_, _, e))::t -> model_strcpy mode spec node pid (e::t) (mem,global)
-  | dst::(CastE(_, _, e))::[] -> model_strcpy mode spec node pid (dst::e::[]) (mem,global)
+    (CastE (_, e))::t -> model_strcpy mode spec node pid (e::t) (mem,global)
+  | dst::(CastE(_, e))::[] -> model_strcpy mode spec node pid (dst::e::[]) (mem,global)
   | (Lval dst)::(Lval src)::[] | (StartOf dst)::(StartOf src)::[]
   | (Lval dst)::(StartOf src)::[] | (StartOf dst)::(Lval src)::[] ->
       let src_arr = Val.array_of_val (lookup (eval_lv ~spec pid src mem) mem) in
@@ -523,7 +523,7 @@ let rec model_strcpy mode spec node pid es (mem, global) =
 
 let rec model_strncpy mode spec node pid es (mem, global) =
   match es with
-    CastE (_, _, e)::t -> model_strncpy mode spec node pid (e::t) (mem, global)
+    CastE (_, e)::t -> model_strncpy mode spec node pid (e::t) (mem, global)
   | (Lval dst)::_::size::_
   | (StartOf dst)::_::size::_ ->
       let arr = Val.array_of_val (lookup (eval_lv ~spec pid dst mem) mem) in
@@ -537,8 +537,8 @@ let rec model_strncpy mode spec node pid es (mem, global) =
 
 let rec model_strcat mode spec node pid es (mem, global) =
   match es with
-    (CastE (_, _, e))::t -> model_strcat mode spec node pid (e::t) (mem,global)
-  | dst::(CastE(_, _, e))::[] -> model_strcat mode spec node pid (dst::e::[]) (mem,global)
+    (CastE (_, e))::t -> model_strcat mode spec node pid (e::t) (mem,global)
+  | dst::(CastE(_, e))::[] -> model_strcat mode spec node pid (dst::e::[]) (mem,global)
   | (Lval dst)::(Lval src)::[] | (StartOf dst)::(StartOf src)::[]
   | (Lval dst)::(StartOf src)::[] | (StartOf dst)::(Lval src)::[] ->
       let src_arr = Val.array_of_val (lookup (eval_lv ~spec pid src mem) mem) in
@@ -551,7 +551,7 @@ let rec model_strcat mode spec node pid es (mem, global) =
 
 let rec model_strchr mode spec node pid (lvo, exps) (mem, global) =
   match lvo, exps with
-    Some _, (CastE (_, _, e))::t -> model_strchr mode spec node pid (lvo, e::t) (mem,global)
+    Some _, (CastE (_, e))::t -> model_strchr mode spec node pid (lvo, e::t) (mem,global)
   | Some lv, (Lval str)::_ | Some lv, (StartOf str)::_ ->
       let str_arr = Val.array_of_val (lookup (eval_lv ~spec pid str mem) mem) in
       let np = ArrayBlk.nullof str_arr in

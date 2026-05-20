@@ -68,7 +68,7 @@ Sparrow product analyzer.  The only Taint claim is the named bounded
 | Arbitrary-C semantic preservation | Fixtures and oracle-suite witnesses bound the evidence. | Current results are not a theorem for all C modules. |
 | General residual summary language | ExternalSummary v2 is prototype/internal and typed for selected return, global-write/read, and pointer-memory effects, but remains witness-bounded. | Broader linking still needs a general effect algebra beyond selected Sparrow-Itv witnesses. |
 | General cyclic residual linking | Only checked function-import SCC witnesses are supported, and callgraph-backed scheduling is a provenance-gated report claim. Arbitrary recursive call/memory cycles, dependency-only schedules labeled as callgraph-backed, and cyclic effects outside the selected witnesses remain unsupported. | Broader cyclic linking still needs a general call/effect semantics plus oracle evidence beyond the current Sparrow-Itv witness slice. |
-| Full source-level whole-program sparse rerun | The residual linker now runs a post-link residual-global worklist over whole-program residual cells, but it still does not invoke the full source-level Sparrow sparse analyzer as the implementation path. | The implemented claim is witness-bounded residual-global fixpoint evidence, not a broad source-level rerun theorem. |
+| Full source-level whole-program sparse rerun | Implemented for bounded residual-linking witnesses through a post-link source rerun/provenance adapter plus linked-context global residual evidence. | The claim is witness-bounded and evidence-gated; it is not an arbitrary-C theorem, performance claim, mechanized proof, or stable public schema. |
 | Full dynamic control residualization | Loop/branch shape witnesses exist, but statement-level dynamic control coverage is limited. | Needed for larger program classes. |
 | Mechanized proof | Verification is test/audit/oracle based, not proof-assistant mechanized. | Formal PL claims need a theorem statement and proof. |
 | Stable public artifact schema | The oracle suite is prototype/non-public. | External users should not depend on the current JSON schema. |
@@ -83,11 +83,14 @@ then materialized as final input/output rows.  The older component-overlay view 
 kept only as compatibility evidence inside equation bodies; solver-backed reports
 must say `residual_solver_run=true`, `solver_backed_residual_fixpoint=true`,
 `worklist_drained=true`, and `overlay_only=false`.  After residual linking,
-the prototype also runs a post-link global residual-cell worklist that separates
-seed cells from derived cells and reports `global_residual_fixpoint_run=true`,
+the prototype also runs a post-link source-level rerun/provenance adapter and
+global residual-cell worklist.  Accepted reports must include
+`global_residual_fixpoint_run=true`,
 `global_residual_fixpoint_scope=post-link-whole-program-residual-cells`,
-non-empty equations/dependencies/cross-module edges, state/seed reads, a drained
-worklist, and `global_sparse_fixpoint_source_level_rerun=false`.
+`global_sparse_fixpoint_source_level_rerun=true`,
+`global_source_rerun_ready_for_relation_gate=true`, linked-context consumption,
+validated rerun evidence, non-empty equations/dependencies/cross-module edges,
+state/seed reads, and a drained worklist.
 
 ### Review-locked Option A obligations
 

@@ -436,7 +436,7 @@ let rec make_nested_array : Sparrow_cil.fundec -> Sparrow_cil.lval -> Sparrow_ci
         let tmp = (Sparrow_cil.Var (Sparrow_cil.makeTempVar fd (Sparrow_cil.TPtr (Sparrow_cil.TVoid [], []))), Sparrow_cil.NoOffset) in
         let (term, g) = make_array fd tmp t size loc assume_node g in
         let cast_node = Node.make () in
-        let cast_cmd = Cmd.Cset (element, Sparrow_cil.CastE (Sparrow_cil.Explicit, TPtr (t, []), Sparrow_cil.Lval tmp), loc) in
+        let cast_cmd = Cmd.Cset (element, Sparrow_cil.CastE (TPtr (t, []), Sparrow_cil.Lval tmp), loc) in
         let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
         make_nested_array fd element t size loc cast_node initialize g
       in
@@ -470,7 +470,7 @@ and generate_allocs_field : Sparrow_cil.fieldinfo list -> Sparrow_cil.lval -> Sp
           let tmp = (Sparrow_cil.Var (Sparrow_cil.makeTempVar fd Sparrow_cil.voidPtrType), Sparrow_cil.NoOffset) in
           let (term, g) = make_array fd tmp typ exp fieldinfo.floc entry g in
           let cast_node = Node.make () in
-          let cast_cmd = Cmd.Cset (field, Sparrow_cil.CastE (Sparrow_cil.Explicit, Sparrow_cil.TPtr (typ, []), Sparrow_cil.Lval tmp), fieldinfo.floc) in
+          let cast_cmd = Cmd.Cset (field, Sparrow_cil.CastE (Sparrow_cil.TPtr (typ, []), Sparrow_cil.Lval tmp), fieldinfo.floc) in
           let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
           let (term, g) = make_nested_array fd field typ exp fieldinfo.floc cast_node false g in
             generate_allocs_field t lv fd term g
@@ -499,7 +499,7 @@ let rec generate_allocs : Sparrow_cil.fundec -> Sparrow_cil.varinfo list -> node
           let tmp = (Sparrow_cil.Var (Sparrow_cil.makeTempVar fd Sparrow_cil.voidPtrType), Sparrow_cil.NoOffset) in
           let (term, g) = make_array fd tmp typ exp varinfo.vdecl entry g in
           let cast_node = Node.make () in
-          let cast_cmd = Cmd.Cset (lv, Sparrow_cil.CastE (Sparrow_cil.Explicit, Sparrow_cil.TPtr (unrollTypeDeep typ, []), Sparrow_cil.Lval tmp), varinfo.vdecl) in
+          let cast_cmd = Cmd.Cset (lv, Sparrow_cil.CastE (Sparrow_cil.TPtr (unrollTypeDeep typ, []), Sparrow_cil.Lval tmp), varinfo.vdecl) in
           let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
           let (term, g) = make_nested_array fd lv typ exp varinfo.vdecl cast_node false g in
             generate_allocs fd t term g
@@ -550,9 +550,9 @@ let transform_string_allocs : Sparrow_cil.fundec -> t -> t
         let (e1', l1) = replace_str e1 in
         let (e2', l2) = replace_str e2 in
         (match l1@l2 with [] -> (e, []) | _ -> (BinOp (b, e1', e2', t), l1@l2))
-    | CastE (_, t, exp) ->
+    | CastE (t, exp) ->
         let (exp', l) = replace_str exp in
-        (match l with [] -> (e, l) | _ -> (CastE (Sparrow_cil.Explicit, t, exp'), l))
+        (match l with [] -> (e, l) | _ -> (CastE (t, exp'), l))
     | _ -> (e, [])
   in
   let generate_sallocs : (Sparrow_cil.lval * string) list -> Sparrow_cil.location -> node -> t -> (node * t)
@@ -640,13 +640,13 @@ let transform_allocs : Sparrow_cil.fundec -> t -> t
             let g = add_cmd node cmd g in
             (node, g)
       end
-    | SizeOf typ | CastE (_, _, SizeOf typ) ->
+    | SizeOf typ | CastE (_, SizeOf typ) ->
       begin
         let typ = Sparrow_cil.unrollTypeDeep typ in
         match lv, typ with
           (Var v, NoOffset), TComp (comp, _) ->   (* dynamic struct alloc *)
             let cast_node = Node.make () in
-            let cast_cmd = Cmd.Cset (lv, Sparrow_cil.CastE (Sparrow_cil.Explicit, Sparrow_cil.TPtr (typ, []), Sparrow_cil.Lval lv), loc) in
+            let cast_cmd = Cmd.Cset (lv, Sparrow_cil.CastE (Sparrow_cil.TPtr (typ, []), Sparrow_cil.Lval lv), loc) in
             g
             |> add_cmd node (Cmd.Calloc (lv, Cmd.Array exp, false, loc))
             |> add_cmd cast_node cast_cmd
@@ -734,7 +734,7 @@ let rec process_gvardecl : Sparrow_cil.fundec -> Sparrow_cil.lval -> Sparrow_cil
       let tmp = (Sparrow_cil.Var (Sparrow_cil.makeTempVar fd Sparrow_cil.voidPtrType), Sparrow_cil.NoOffset) in
       let (term, g) = make_array fd tmp typ exp loc entry g in
       let cast_node = Node.make () in
-      let cast_cmd = Cmd.Cset (lv, Sparrow_cil.CastE (Sparrow_cil.Explicit, Sparrow_cil.TPtr (typ, []), Sparrow_cil.Lval tmp), loc) in
+      let cast_cmd = Cmd.Cset (lv, Sparrow_cil.CastE (Sparrow_cil.TPtr (typ, []), Sparrow_cil.Lval tmp), loc) in
       let g = g |> add_cmd cast_node cast_cmd |> add_edge term cast_node in
       let (term, g) = make_nested_array fd lv typ exp loc cast_node true g in
       (term, g)
