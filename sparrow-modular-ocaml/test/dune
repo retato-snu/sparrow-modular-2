@@ -30,6 +30,7 @@
   abstract_speculate_residual_memory_delta_unit
   abstract_speculate_residual_scalar_call_unit
   abstract_speculate_residual_solver_unit
+  whole_program_residual_global_fixpoint_audit
   abstract_speculate_itv_residual_cell_unit
   abstract_speculate_staged_transfer
   abstract_speculate_staged_lattice
@@ -143,7 +144,8 @@
   (alias real_sparrow_sparse_fixpoint_pe)
   (alias real_sparrow_premerge_linked_observer)
   (alias abstract_speculate_metaocaml_sparse_pe)
-  (alias abstract_speculate_residual_api_model_coverage)))
+  (alias abstract_speculate_residual_api_model_coverage)
+  (alias whole_program_residual_global_fixpoint_verification)))
 
 (rule
  (alias real_sparrow_access_dug)
@@ -373,6 +375,20 @@
     "root=$(cd ../../.. && pwd); ./abstract_speculate_pe_audit.bc --repo-root $root --source-lineage-report abstract_speculate_metaocaml_sparse.source-lineage-check.json --module-boundary-report abstract_speculate_metaocaml_sparse.module-boundary-report.json --fact-provenance-report abstract_speculate_metaocaml_sparse.fact-provenance.json --bta-report abstract_speculate_metaocaml_sparse.bta-report.json --residual-report abstract_speculate_metaocaml_sparse.residual-inspection.json --forbidden-source-report abstract_speculate_metaocaml_sparse.forbidden-source-scan.json --report abstract_speculate_metaocaml_sparse.audit.json"))))
 
 (rule
+ (alias whole_program_residual_global_fixpoint_verification)
+ (targets whole_program_residual_global_fixpoint_audit.report.json)
+ (deps
+  whole_program_residual_global_fixpoint_audit.bc
+  (alias abstract_speculate_residual_linking_oracle_suite)
+  ../doc/sparrow-pe-status.md
+  ../doc/verification.md)
+ (action
+  (run
+   bash
+   -c
+   "root=$(cd ../../.. && pwd); ./whole_program_residual_global_fixpoint_audit.bc --repo-root $root --artifact-dir $root/_build/real-sparrow/abstract-speculate-residual-linking-oracle-suite/active --report whole_program_residual_global_fixpoint_audit.report.json")))
+
+(rule
  (alias abstract_speculate_residual_linking_pe)
  (targets abstract_speculate_residual_linking_pe.report.json)
  (deps
@@ -436,6 +452,8 @@
   fixtures/abstract_speculate_residual_linking_oracle_suite/cycle_topology/b.c
   fixtures/abstract_speculate_residual_linking_oracle_suite/callgraph_scheduler_cycle/a.c
   fixtures/abstract_speculate_residual_linking_oracle_suite/callgraph_scheduler_cycle/b.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite/cycle_value_flow/left.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite/cycle_value_flow/right.c
   fixtures/abstract_speculate_residual_linking_oracle_suite/taint_product_pair/importer.c
   fixtures/abstract_speculate_residual_linking_oracle_suite/taint_product_pair/provider.c
   fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/global_write_read/importer.c
@@ -454,6 +472,8 @@
   fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/cycle_topology/b.c
   fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/callgraph_scheduler_cycle/a.c
   fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/callgraph_scheduler_cycle/b.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/cycle_value_flow/left.c
+  fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/cycle_value_flow/right.c
   fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/taint_product_pair/importer.c
   fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/taint_product_pair/provider.c
   fixtures/abstract_speculate_residual_linking_oracle_suite_negative/ambiguous_provider/importer.c
@@ -481,11 +501,15 @@
    (run
     bash
     -c
-    "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_linking_oracle_suite_dump.bc --witness 'global_write_read|global-write-read|fixtures/abstract_speculate_residual_linking_oracle_suite/global_write_read/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite/global_write_read/provider.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/global_write_read/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/global_write_read/provider.c' --witness 'pointer_memory_effect|pointer-memory-effect|fixtures/abstract_speculate_residual_linking_oracle_suite/pointer_memory_effect/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite/pointer_memory_effect/provider.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/pointer_memory_effect/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/pointer_memory_effect/provider.c' --witness 'multiple_providers_imports|multiple-providers-imports|fixtures/abstract_speculate_residual_linking_oracle_suite/multiple_providers_imports/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite/multiple_providers_imports/provider_first.c,fixtures/abstract_speculate_residual_linking_oracle_suite/multiple_providers_imports/provider_second.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/multiple_providers_imports/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/multiple_providers_imports/provider_first.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/multiple_providers_imports/provider_second.c' --witness 'mixed_role_chain|mixed-role-chain|fixtures/abstract_speculate_residual_linking_oracle_suite/mixed_role_chain/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite/mixed_role_chain/middle.c,fixtures/abstract_speculate_residual_linking_oracle_suite/mixed_role_chain/provider_a.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/mixed_role_chain/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/mixed_role_chain/middle.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/mixed_role_chain/provider_a.c' --witness 'cycle_topology|return-only|fixtures/abstract_speculate_residual_linking_oracle_suite/cycle_topology/a.c,fixtures/abstract_speculate_residual_linking_oracle_suite/cycle_topology/b.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/cycle_topology/a.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/cycle_topology/b.c' --witness 'callgraph_scheduler_cycle|return-only|fixtures/abstract_speculate_residual_linking_oracle_suite/callgraph_scheduler_cycle/a.c,fixtures/abstract_speculate_residual_linking_oracle_suite/callgraph_scheduler_cycle/b.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/callgraph_scheduler_cycle/a.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/callgraph_scheduler_cycle/b.c' --witness 'taint_product_pair|taint-product-pair|fixtures/abstract_speculate_residual_linking_oracle_suite/taint_product_pair/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite/taint_product_pair/provider.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/taint_product_pair/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/taint_product_pair/provider.c' --out $root/_build/real-sparrow/abstract-speculate-residual-linking-oracle-suite/active")
+    "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_linking_oracle_suite_dump.bc --witness 'global_write_read|global-write-read|fixtures/abstract_speculate_residual_linking_oracle_suite/global_write_read/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite/global_write_read/provider.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/global_write_read/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/global_write_read/provider.c' --witness 'pointer_memory_effect|pointer-memory-effect|fixtures/abstract_speculate_residual_linking_oracle_suite/pointer_memory_effect/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite/pointer_memory_effect/provider.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/pointer_memory_effect/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/pointer_memory_effect/provider.c' --witness 'multiple_providers_imports|multiple-providers-imports|fixtures/abstract_speculate_residual_linking_oracle_suite/multiple_providers_imports/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite/multiple_providers_imports/provider_first.c,fixtures/abstract_speculate_residual_linking_oracle_suite/multiple_providers_imports/provider_second.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/multiple_providers_imports/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/multiple_providers_imports/provider_first.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/multiple_providers_imports/provider_second.c' --witness 'mixed_role_chain|mixed-role-chain|fixtures/abstract_speculate_residual_linking_oracle_suite/mixed_role_chain/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite/mixed_role_chain/middle.c,fixtures/abstract_speculate_residual_linking_oracle_suite/mixed_role_chain/provider_a.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/mixed_role_chain/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/mixed_role_chain/middle.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/mixed_role_chain/provider_a.c' --witness 'cycle_topology|return-only|fixtures/abstract_speculate_residual_linking_oracle_suite/cycle_topology/a.c,fixtures/abstract_speculate_residual_linking_oracle_suite/cycle_topology/b.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/cycle_topology/a.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/cycle_topology/b.c' --witness 'callgraph_scheduler_cycle|return-only|fixtures/abstract_speculate_residual_linking_oracle_suite/callgraph_scheduler_cycle/a.c,fixtures/abstract_speculate_residual_linking_oracle_suite/callgraph_scheduler_cycle/b.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/callgraph_scheduler_cycle/a.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/callgraph_scheduler_cycle/b.c' --witness 'cycle_value_flow|cycle-value-flow|fixtures/abstract_speculate_residual_linking_oracle_suite/cycle_value_flow/left.c,fixtures/abstract_speculate_residual_linking_oracle_suite/cycle_value_flow/right.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/cycle_value_flow/left.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/cycle_value_flow/right.c' --witness 'taint_product_pair|taint-product-pair|fixtures/abstract_speculate_residual_linking_oracle_suite/taint_product_pair/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite/taint_product_pair/provider.c|fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/taint_product_pair/importer.c,fixtures/abstract_speculate_residual_linking_oracle_suite_premerge/taint_product_pair/provider.c' --out $root/_build/real-sparrow/abstract-speculate-residual-linking-oracle-suite/active")
    (run
     bash
     -c
     "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_linking_oracle_suite_check.bc --repo-root $root --artifact-dir $root/_build/real-sparrow/abstract-speculate-residual-linking-oracle-suite/active --report abstract_speculate_residual_linking_oracle_suite.report.json"))))
+
+(alias
+ (name abstract_speculate_residual_global_fixpoint)
+ (deps abstract_speculate_residual_linking_oracle_suite.report.json))
 
 (alias
  (name abstract_speculate_pe_proof)

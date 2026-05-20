@@ -55,6 +55,7 @@ Sparrow product analyzer.  The only Taint claim is the named bounded
 | First residual-linking prototype | Implemented for bounded witnesses | `src/abstract_speculate_residual_linker.ml`, `@abstract_speculate_residual_linking_pe`. |
 | Checked cyclic residual scheduling | Implemented only for bounded function-import SCC witnesses with explicit scheduler provenance | `src/abstract_speculate_residual_linker.ml`, `@abstract_speculate_residual_linking_oracle_suite`; reports may call scheduling callgraph-backed only when every scheduler edge carries direct callgraph or residual call-binding provenance. |
 | Residual-linking oracle suite | Implemented as prototype full Sparrow-Itv evidence | `@abstract_speculate_residual_linking_oracle_suite`. |
+| Post-link residual-global fixpoint | Implemented for bounded residual-linking witnesses | `src/abstract_speculate_global_residual_fixpoint.ml` runs a post-link whole-program residual-cell worklist; `src/abstract_speculate_residual_linker.ml` emits `global_residual_*` evidence; `@abstract_speculate_residual_linking_oracle_suite` gates positive, cycle, equivalence, and negative cases. |
 | Bounded Taint-first product witness | Implemented only for the named `taint_product_pair` oracle-suite witness | ExternalSummary v3 reports `taint_components` and `product_pair_evidence` for one Itv+Taint product-pair; this is not general Taint/product-domain parity. |
 
 ## Not implemented / not claimed
@@ -67,7 +68,7 @@ Sparrow product analyzer.  The only Taint claim is the named bounded
 | Arbitrary-C semantic preservation | Fixtures and oracle-suite witnesses bound the evidence. | Current results are not a theorem for all C modules. |
 | General residual summary language | ExternalSummary v2 is prototype/internal and typed for selected return, global-write/read, and pointer-memory effects, but remains witness-bounded. | Broader linking still needs a general effect algebra beyond selected Sparrow-Itv witnesses. |
 | General cyclic residual linking | Only checked function-import SCC witnesses are supported, and callgraph-backed scheduling is a provenance-gated report claim. Arbitrary recursive call/memory cycles, dependency-only schedules labeled as callgraph-backed, and cyclic effects outside the selected witnesses remain unsupported. | Broader cyclic linking still needs a general call/effect semantics plus oracle evidence beyond the current Sparrow-Itv witness slice. |
-| Whole-program residual global fixpoint | The residual linker does not rerun a global sparse fixpoint. | Needed for a stronger `link(PE(I,m),d)` equivalence claim. |
+| Full source-level whole-program sparse rerun | The residual linker now runs a post-link residual-global worklist over whole-program residual cells, but it still does not invoke the full source-level Sparrow sparse analyzer as the implementation path. | The implemented claim is witness-bounded residual-global fixpoint evidence, not a broad source-level rerun theorem. |
 | Full dynamic control residualization | Loop/branch shape witnesses exist, but statement-level dynamic control coverage is limited. | Needed for larger program classes. |
 | Mechanized proof | Verification is test/audit/oracle based, not proof-assistant mechanized. | Formal PL claims need a theorem statement and proof. |
 | Stable public artifact schema | The oracle suite is prototype/non-public. | External users should not depend on the current JSON schema. |
@@ -81,7 +82,12 @@ validated dynamic extern/link facts, solved to a bounded worklist fixpoint, and
 then materialized as final input/output rows.  The older component-overlay view is
 kept only as compatibility evidence inside equation bodies; solver-backed reports
 must say `residual_solver_run=true`, `solver_backed_residual_fixpoint=true`,
-`worklist_drained=true`, and `overlay_only=false`.
+`worklist_drained=true`, and `overlay_only=false`.  After residual linking,
+the prototype also runs a post-link global residual-cell worklist that separates
+seed cells from derived cells and reports `global_residual_fixpoint_run=true`,
+`global_residual_fixpoint_scope=post-link-whole-program-residual-cells`,
+non-empty equations/dependencies/cross-module edges, state/seed reads, a drained
+worklist, and `global_sparse_fixpoint_source_level_rerun=false`.
 
 ### Review-locked Option A obligations
 

@@ -29,12 +29,13 @@ The linked analyzer is produced after each module has already passed through the
   `shared_scc_final_cells`. Dependency-only schedules may be reported as
   residual dependency scheduling, but not as callgraph-backed scheduling.
 - The first semantic milestone was return-focused; the current handoff uses
-  `ExternalSummary v2`, a prototype/internal typed effect summary over selected
+  `ExternalSummary v3`, a prototype/internal typed effect summary over selected
   Sparrow-Itv witnesses.  Provider stage-2 rows are summarized into typed
-  `return_effects`, `global_effects`, and `pointer_effects`, then consumed
-  through `semantic_exports`, `linked_environment`, and linked stage-2 input
-  derivations.  The embedded v1 projection is compatibility evidence only and
-  is not authoritative.
+  `return_effects` plus authoritative v3 `memory_deltas` / `delta_chains` for
+  selected global and pointer witnesses, then consumed through
+  `semantic_exports`, `linked_environment`, and linked stage-2 input
+  derivations.  Retained v1/v2-style `global_effects` and `pointer_effects`
+  are compatibility projections only and cannot satisfy memory authority gates.
 
 ## Full Sparrow-Itv semantic relation contract
 
@@ -74,32 +75,42 @@ For this experiment, the following are mandatory claim gates:
   through solver state; and
 - the compatibility bridge that invokes existing component code inside an
   equation body remains implementation scaffolding, not a standalone PE proof.
-- linked handoff evidence must prefer ExternalSummary v2 typed effects; v1
-  compatibility projections cannot satisfy return/global/pointer summary gates.
+- linked handoff evidence must prefer ExternalSummary v3 typed effects; v1/v2
+  compatibility projections cannot satisfy return or memory-delta summary gates.
 
 Any future change that weakens one of these gates must downgrade the claim back
 to instrumentation/prototype evidence until an equivalent state-reading
 residual-equation contract is restored.
 
-### ExternalSummary v2 typed-effect boundary
+### ExternalSummary v3 typed-effect and memory-delta boundary
 
-`ExternalSummary v2` is an internal prototype schema, not a public API.  Its
+`ExternalSummary v3` is an internal prototype schema, not a public API.  Its
 scope is `sparrow-itv-selected-witness` and its summary status is
 `prototype-internal`.  Each summary records:
 
 - `return_effects` for provider return cells used by linked importer extern
   calls;
-- `global_effects` for selected global write/read evidence such as `shared_g`;
-- `pointer_effects` for selected pointer/shared-memory evidence such as
+- authoritative `memory_deltas` for selected global write/read evidence such as
+  `shared_g` and selected pointer/shared-memory evidence such as
   `(write_ptr,p)`;
-- provider/source/phase/evidence-path provenance; and
-- `external_summary_v1_compat` as a non-authoritative migration projection.
+- `delta_chains` that bind writer/provider, linker, and reader/importer roles
+  to deterministic chain ids/hashes;
+- raw and normalized location identity, before/read and after/write value
+  transition evidence, provider/source/artifact provenance, and source evidence
+  paths;
+- `memory_delta_validation`, the auditable report-level validation summary
+  carrying schema id, checked delta/chain counts, compatibility projection
+  status, and failure reasons; and
+- `external_summary_v1_compat`, `global_effects`, and `pointer_effects` as
+  non-authoritative migration projections only.
 
-The checker rejects missing v2 summaries, v1-only summaries, schema/status
-downgrades, missing or corrupted return effects, missing selected
-global/pointer effects, corrupted selected global/pointer location, value, or
-provenance, and linked stage-2 derivations that do not name the v2 return
-`effect_id`.
+The checker rejects missing v3 summaries, v1/v2-compatibility-only summaries,
+schema/status downgrades, missing or corrupted return effects, missing
+authoritative memory deltas/chains, role swaps, wrong raw or normalized memory
+locations, wrong value transitions, missing/wrong provenance, missing/corrupted
+chains, and linked stage-2 derivations that do not name the v3 return
+`effect_id`.  A report with plausible legacy `global_effects` or
+`pointer_effects` but no valid `memory_deltas` fails closed.
 
 
 ### Typed scalar-call protocol boundary
@@ -116,7 +127,7 @@ for:
 
 - `external_summary_v1_compat.extern_scalar_value` and
   `function_return_summary` compatibility fields;
-- `external_summary.return_effects` v2 return effects; and
+- `external_summary.return_effects` v3 return effects; and
 - embedded `return_effect` objects in `linked_stage2_input_derivation`.
 
 The additive metadata fields `scalar_protocol_schema`,
@@ -141,7 +152,7 @@ The relation ranges over prototype witness artifacts, not arbitrary C programs. 
 - residual artifacts emitted by module-local `PE(I, mi)` followed by residual linking;
 - oracle/reference artifacts emitted by the premerge linked observer for the same witness group;
 - full final input/output Itv table cells exposed by those artifacts;
-- semantic exports, linked environments, typed ExternalSummary v2 effects,
+- semantic exports, linked environments, typed ExternalSummary v3 effects,
   phase logs, linked stage-2 derivations, completion evidence, and provenance
   required to interpret those cells.
 
@@ -154,8 +165,10 @@ Each witness report emits `full_itv_semantic_relation` with:
 - `semantic_universe` listing final tables, semantic exports, linked
   environment/call-effect evidence, completion/status evidence, provenance, and
   oracle identity;
-- ExternalSummary v2 return/global/pointer effect evidence, with v1
-  compatibility treated as non-authoritative;
+- ExternalSummary v3 return and memory-delta evidence, with v1/v2
+  compatibility projections treated as non-authoritative;
+- `memory_delta_validation` summarizing v3 schema id, checked delta/chain
+  counts, compatibility-projection status, and any validation reasons;
 - `semantic_universe_manifest` classifying facts as compared, missing,
   intentionally excluded, or expected-but-not-emitted;
 - `failure_taxonomy` with bounded reasons:
@@ -281,11 +294,12 @@ For the current return witness, `semantic_exports` contains the provider-derived
 - concrete return value parsed from that provider stage-2 row;
 - row/provenance evidence marked `provider-stage2-output`.
 
-For global and pointer witnesses, the same ExternalSummary v2 object additionally
-contains selected typed global or pointer effects.  These effects are checked
-against the oracle-suite relation observations, but they remain bounded to the
-selected Sparrow-Itv witness universe rather than a general C memory/effect
-calculus.
+For global and pointer witnesses, the same ExternalSummary v3 object additionally
+contains authoritative selected typed memory deltas and ordered chains.  Legacy
+global/pointer effect lists remain as compatibility projections, but the
+oracle-suite relation and PE checker require valid v3 role, location, value,
+provenance, and chain evidence.  These deltas remain bounded to the selected
+Sparrow-Itv witness universe rather than a general C memory/effect calculus.
 
 `linked_environment` maps the importer's matched `linked_provider` obligation and extern root (currently `main-4`) to that provider summary. The importer's linked stage-2 extern effect uses reason `linked-provider-return`; the old module-local `unknown-extern-call` value is no longer accepted as linkage evidence, even when the numeric value happens to be `41`.
 
@@ -390,8 +404,9 @@ addressing, casts, `sizeof`, `StartOf`, pruning, and pointer-derived location
 sets are part of the baseline Itv semantics.
 
 The current typed residual component interface is narrower.  Link-time
-residual code is primarily `stage2_input -> int`, and `ExternalSummary v2`
-records selected typed effects rather than the full Itv value/memory language.
+residual code is primarily `stage2_input -> int`, and `ExternalSummary v3`
+records selected typed return effects plus memory deltas rather than the full
+Itv value/memory language.
 Fallbacks for unsupported residual expression shapes are intentionally
 prototype-level.  This is sufficient for singleton return/global/pointer/cycle
 witnesses, but not for arbitrary Itv values or full C memory semantics.
@@ -634,7 +649,7 @@ The legacy report surfaces remain present for compatibility:
 - `linked_stage2_input_derivation.external_summary`
 
 Additive scalar metadata is emitted consistently on the v1 scalar payload,
-function-return summary, v2 return effect, and linked derivation entries. The
+function-return summary, v3 return effect, and linked derivation entries. The
 metadata includes `scalar_protocol_schema`, `scalar_call_protocol_id`,
 `scalar_value_model`, `scalar_value_kind`, provider identity/hash, export name,
 return node/location, return effect id, and `typed_scalar_metadata_valid`.

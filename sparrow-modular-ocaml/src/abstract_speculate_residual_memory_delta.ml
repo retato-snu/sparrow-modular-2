@@ -503,6 +503,18 @@ let validate_delta_json delta =
   let normalized_location = string_field "normalized_location" delta in
   let domain = string_field "domain" delta in
   let source_path = string_field "source_evidence_path" delta in
+  let chain_id = string_field "chain_id" delta in
+  let provider_module = string_field "provider_module" delta in
+  let provider_source_hash = string_field "provider_source_hash" delta in
+  let provider_artifact_path = string_field "provider_artifact_path" delta in
+  let provider_phase_index = int_field "provider_phase_index" delta in
+  let chain_id_provenance_prefix =
+    deterministic_hash ["memory-delta-chain"; provider_module; provider_source_hash] ^ ":"
+  in
+  let expected_chain_hash =
+    deterministic_hash
+      [chain_id; provider_artifact_path; string_of_int provider_phase_index; string_field "write_value" delta]
+  in
   let memory_prefix = "provider_row.memory:" in
   let taint_prefix = "provider_row.taint:" in
   let source_location =
@@ -527,12 +539,14 @@ let validate_delta_json delta =
     |> add (source_location <> "" && source_location = raw_location) "memory_delta_location_mismatch"
     |> add (string_field "read_value" delta <> "" && string_field "write_value" delta <> "") "memory_delta_value_transition_mismatch"
     |> add (assoc_field "read_canonical_value" delta <> None && assoc_field "write_canonical_value" delta <> None) "memory_delta_value_transition_mismatch"
-    |> add (string_field "provider_module" delta <> "") "memory_delta_provenance_mismatch"
-    |> add (string_field "provider_source_hash" delta <> "") "memory_delta_provenance_mismatch"
-    |> add (string_field "provider_artifact_path" delta <> "") "memory_delta_provenance_mismatch"
-    |> add (int_field "provider_phase_index" delta <> min_int) "memory_delta_provenance_mismatch"
+    |> add (provider_module <> "") "memory_delta_provenance_mismatch"
+    |> add (provider_source_hash <> "") "memory_delta_provenance_mismatch"
+    |> add (provider_artifact_path <> "") "memory_delta_provenance_mismatch"
+    |> add (provider_phase_index <> min_int) "memory_delta_provenance_mismatch"
     |> add (string_field "derivation_source" delta = "provider-stage2-output") "memory_delta_provenance_mismatch"
-    |> add (string_field "chain_id" delta <> "" && string_field "chain_hash" delta <> "") "memory_delta_chain_missing"
+    |> add (chain_id <> "" && string_field "chain_hash" delta <> "") "memory_delta_chain_missing"
+    |> add (starts_with chain_id chain_id_provenance_prefix) "memory_delta_provenance_mismatch"
+    |> add (string_field "chain_hash" delta = expected_chain_hash) "memory_delta_chain_hash_mismatch"
     |> add (bool_field "typed_memory_delta_valid" delta || assoc_field "typed_memory_delta_valid" delta = None) "memory_delta_schema_mismatch"
   in
   let reasons =

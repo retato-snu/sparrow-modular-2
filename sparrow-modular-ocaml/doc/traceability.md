@@ -25,9 +25,16 @@ This repository currently accepts source-lineage evidence for:
 - `test/real_sparrow_acceptance_audit.ml` checks baseline `sparrow/src`
   cleanliness, required documentation, forbidden toy shortcuts, and stale
   overclaim wording.
+- `src/abstract_speculate_global_residual_fixpoint.ml` emits post-link
+  residual-global seed/derived cell, equation, dependency, worklist, and
+  non-source-level-rerun evidence for bounded residual-linking witnesses.
+- `src/abstract_speculate_residual_relation.ml` derives the bounded
+  `global_residual_equivalence_status` in the oracle-suite relation.
 
 ## Non-claims
 
 The current real Sparrow milestones do not claim Strong-mode staging,
-sparse/DUG parity, whole-program merge equivalence, executable residual code,
-residual linking, or link-time/global-fixpoint behavior.
+sparse/DUG parity, whole-program merge equivalence, arbitrary-C preservation, a
+source-level analyzer rerun inside the residual linker, or public schema
+stability.  Residual linking and post-link residual-global fixpoint evidence are
+accepted only for the bounded `sparrow-modular-ocaml` oracle-suite witnesses.
