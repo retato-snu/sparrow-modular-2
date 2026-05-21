@@ -1,3 +1,4 @@
+module MetaSparse = Sparrow_modular_ocaml.Abstract_speculate_meta_sparse
 module Cell = Sparrow_modular_ocaml.Abstract_speculate_itv_residual_cell
 
 let expect cond msg = if not cond then failwith msg
@@ -97,7 +98,40 @@ let () =
   expect (string_field "value" legacy <> "") "legacy JSON value missing";
   let metadata = Cell.metadata_json range in
   expect (string_field "value_model" metadata = Cell.value_model_id) "metadata value model missing";
+  expect (string_field "cell_id" metadata = "output:n:x") "metadata cell id missing";
+  expect (string_field "table" metadata = "output") "metadata table missing";
+  expect (string_field "node" metadata = "n") "metadata node missing";
+  expect (string_field "location" metadata = "x") "metadata location missing";
   expect (not (bool_field "is_lattice_bottom" metadata)) "non-bottom metadata marked bottom";
+  let canonical = member "canonical_value" metadata in
+  expect (string_field "kind" canonical = "range") "metadata canonical kind missing";
+  expect (int_field "lo" canonical = 1 && int_field "hi" canonical = 4)
+    "metadata canonical bounds missing";
+  expect (string_field "raw" canonical = "([1,4], typed-itv-residual-cell/v1)")
+    "metadata canonical raw missing";
+  let api_metadata =
+    `Assoc
+      (MetaSparse.api_extra_fields
+         ~function_name:"memcpy"
+         ~abstract_effect:
+           "source array memory copied to destination locations; memcpy return destination is tracked only when assigned")
+  in
+  expect (string_field "api_residual_function" api_metadata = "memcpy")
+    "api residual function missing";
+  expect
+    (string_field "api_baseline_source" api_metadata
+    = "sparrow-modular-ocaml/src/itvSem.ml:482-492; sparrow-modular-ocaml/src/apiSem.ml:70-75")
+    "api baseline source missing";
+  expect
+    (string_field "api_abstract_effect" api_metadata
+    = "source array memory copied to destination locations; memcpy return destination is tracked only when assigned")
+    "api abstract effect missing";
+  expect
+    (string_field "api_semantic_provenance" api_metadata = "residual-api-model-coverage/slice-1")
+    "api semantic provenance missing";
+  expect (bool_field "covered_api" api_metadata) "api covered flag missing";
+  expect (not (bool_field "unsupported_api_coverage" api_metadata))
+    "api unsupported coverage flag set";
   let target = id in
   let old_row = row [cell_json (`Int 1); cell_json ~location:"z" (`String "z-preserved")] in
   let new_row = row ~extra:(`String "new-row-field") [cell_json (`Int 4); cell_json ~location:"z" (`String "z-new")] in

@@ -117,6 +117,20 @@ let () =
   in
   expect (Scalar.validation_ok (Scalar.validate_linked_derivation_json derivation))
     "valid linked derivation rejected";
+  let summary_mutation =
+    Scalar.add_fields
+      [
+        "external_summary",
+        `Assoc
+          [
+            ( "return_effects",
+              `List [ Scalar.add_fields [ "symbol", `String "provide-mut" ] eff ] );
+          ];
+      ]
+      derivation
+  in
+  expect (Scalar.validation_ok (Scalar.validate_linked_derivation_json summary_mutation))
+    "linked derivation should key external_summary return evidence by effect_id, not structural equality";
   expect_error
     (Scalar.make_provider_return
        ~provider_module:"provider.c"

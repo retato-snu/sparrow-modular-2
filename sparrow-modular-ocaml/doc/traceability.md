@@ -30,6 +30,11 @@ This repository currently accepts source-lineage evidence for:
   non-source-level-rerun evidence for bounded residual-linking witnesses.
 - `src/abstract_speculate_residual_relation.ml` derives the bounded
   `global_residual_equivalence_status` in the oracle-suite relation.
+- `.omx/plans/prd-external-summary-effect-algebra.md` and
+  `.omx/plans/test-spec-external-summary-effect-algebra.md` define the
+  approved typed effect algebra migration contract and verification boundary;
+  the current review slice should treat the planned `.mli` interfaces as future
+  boundaries, not existing APIs.
 
 ## Non-claims
 

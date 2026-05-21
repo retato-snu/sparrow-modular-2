@@ -14,7 +14,9 @@ working directory.
 | Active build, typecheck, and test suite | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @runtest` | Dune completes successfully; this covers the aggregated active aliases in `test/dune`. |
 | Focused MetaOCaml sparse PE gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_metaocaml_sparse_pe` | Sparse PE source-lineage, module-boundary, provenance, BTA, residual, forbidden-shortcut, and audit reports are regenerated. |
 | Focused residual-linking prototype gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_residual_linking_pe` | The residual-linking prototype report is regenerated. |
-| Typed scalar-call protocol unit gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune exec test/abstract_speculate_residual_scalar_call_unit.bc` | Unit checks validate typed scalar constructors, full-Itv scalar normalization, v1/v2 JSON compatibility, and mismatch rejection. |
+| Focused residual API model coverage gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_residual_api_model_coverage` | The Slice 1 API coverage report is regenerated with schema `abstract-speculate-residual-api-model-coverage/v1`, covering exactly `memcpy`, `strcpy`, and `strlen` with upstream dependency, state-read, seed-read, and negative mutation checks. |
+| Typed scalar-call protocol unit gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune exec test/abstract_speculate_residual_scalar_call_unit.bc` | Unit checks validate typed scalar constructors, full-Itv scalar normalization, legacy v1 compatibility payloads, ExternalSummary v3 derivation compatibility, and mismatch rejection. |
+| ExternalSummary v3 memory-delta unit gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune exec test/abstract_speculate_residual_memory_delta_unit.bc` | Unit checks validate `abstract-speculate-external-summary/v3`, `abstract-speculate-external-summary-memory-delta/v3`, selected global/pointer memory deltas, chain validation, and negative corruption cases. |
 | Focused residual-linking oracle-suite gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_residual_linking_oracle_suite` | The oracle-suite report is regenerated, including positive and negative witnesses plus the post-link `global_residual_*` fixpoint/equivalence gate. |
 | Documentation build | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @doc` | Package documentation builds successfully when documentation tooling is installed. |
 | Frozen baseline regression | `cd sparrow && opam exec --switch sparrow -- dune runtest --force` | The frozen baseline/oracle passes under its own switch. |
@@ -77,10 +79,37 @@ Use this checklist when validating the post-link residual-global worklist slice:
 
 
 
+## Typed effect algebra migration review slice
+
+Use this checklist when reviewing the approved PRD/test-spec pair for the
+typed effect algebra redesign. This is a review/docs slice, not an
+implementation claim.
+
+1. Confirm the authoritative contract is the approved PRD plus test spec:
+   `.omx/plans/prd-external-summary-effect-algebra.md` and
+   `.omx/plans/test-spec-external-summary-effect-algebra.md`.
+2. Confirm the review scope stays on the current authority surfaces:
+   `abstract_speculate_residual_linker.ml`,
+   `abstract_speculate_residual_memory_delta.ml`,
+   `abstract_speculate_residual_scalar_call.ml`, and
+   `abstract_speculate_residual_relation.ml`.
+3. Confirm the docs slice names the intended typed effect algebra `.mli`
+   boundaries as planned interfaces only.
+4. Confirm the migration does not claim success until typed effect algebra
+   constructors, projection-only JSON, and no-v3-authority gates are evidenced
+   by tests.
+5. Confirm review notes preserve the hard non-goals: no full verifier rewrite,
+   no whole analysis rewrite, no new dependencies, no proof assistant, and no
+   v3 JSON compatibility effort.
+6. Confirm documentation updates distinguish current prototype/non-public
+   evidence from any future stable schema claim.
+
 ## Residual API model coverage checklist
 
 Use this focused checklist when validating residual API model coverage for
-`memcpy`, `strcpy`, and `strlen` only:
+`memcpy`, `strcpy`, and `strlen` only.  The report schema is
+`abstract-speculate-residual-api-model-coverage/v1`; row provenance is
+`residual-api-model-coverage/slice-1`.
 
 1. Confirm each coverage-matrix row names the baseline `ItvSem` / `ApiSem`
    anchor, abstract effect, residual equation/cell target, upstream source
@@ -95,10 +124,37 @@ Use this focused checklist when validating residual API model coverage for
 4. Confirm negative mutations reject missing state reads, missing seed reads,
    empty dependencies, target/self-only dependencies, metadata-only API rows,
    unsupported optional APIs marked as covered, and corrupted provenance.
-5. Reconfirm unsupported APIs remain non-claims: `memmove`, `strncpy`, `strcat`,
+5. Confirm the generated report records
+   `schema_version=abstract-speculate-residual-api-model-coverage/v1`,
+   `scope=exactly memcpy,strcpy,strlen core memory/string copy/length residual
+   semantics`, and an empty `unsupported_api_residual_coverage` list.
+6. Reconfirm unsupported APIs remain non-claims: `memmove`, `strncpy`, `strcat`,
    `strdup` / `xstrdup`, input-buffer APIs, `fgets`, `scanf`, generic
    allocation APIs, broad `ApiSem` entries, disabled `memset`, arbitrary-C API
    semantics, non-Itv product domains, and whole-program equivalence.
+
+## Initial PE ItvDom.Mem final-cell coverage checklist
+
+Use this focused checklist when validating full final-table ItvDom.Mem coverage
+for `abstract_speculate_residual_linking_pe/importer.c + provider.c` only:
+
+1. Run `@abstract_speculate_residual_linking_pe` and inspect
+   `_build/real-sparrow/abstract-speculate-residual-linking-pe/active/abstract-speculate-residual-linking-pe.linked.json`.
+2. Confirm the linked JSON contains `itv_mem_coverage_gate=pass`,
+   `itv_mem_total_cell_count`, `itv_mem_residual_equation_cell_count`,
+   `itv_mem_static_projection_cell_count`, `itv_mem_uncovered_cell_count=0`,
+   and an empty `itv_mem_uncovered_cells` list for the final Itv cell audit.
+3. Confirm every covered final-table cell has stable identity fields
+   (`table`, `node`, `location`, and value), a classification, a
+   `residual_equation_id` when dynamic, and `typed_cell_metadata` when covered
+   as a static projection/equation.
+4. Confirm the PE and oracle relation outputs include
+   `full_itv_relation_contract` and that negative cases reject missing coverage
+   evidence, typed metadata/value mutations, and added uncovered final-table
+   cells even when selected-observation diagnostics still look plausible.
+5. Reconfirm non-goals: this is not an arbitrary-C theorem, not Oct/OctImpact
+   support, not general Taint/product-domain parity, not general API/model
+   coverage, and not a broad effect algebra for all Sparrow cells.
 
 ## Typed residual scalar-call protocol checklist
 
@@ -132,8 +188,11 @@ contract:
 1. Confirm global/pointer memory evidence is constructed through
    `Abstract_speculate_residual_memory_delta` before JSON encoding.
 2. Confirm `memory_deltas`, `delta_chains`, and `memory_delta_validation` are
-   present in generated ExternalSummary v3 reports; legacy `global_effects` and
-   `pointer_effects` must be marked compatibility projections only.
+   present in generated ExternalSummary v3 reports with schema ids
+   `abstract-speculate-external-summary/v3` and
+   `abstract-speculate-external-summary-memory-delta/v3`; legacy
+   `global_effects` and `pointer_effects` must be marked compatibility
+   projections only.
 3. Confirm PE and oracle-suite negative cases reject role swaps, wrong raw or
    normalized locations, wrong value transitions, missing/wrong provenance, and
    missing/corrupted chains even when legacy projection fields remain plausible.
@@ -142,6 +201,36 @@ contract:
 5. Reconfirm non-goals: no solver rewrite, no proof-system expansion, no Oct
    semantics, no general Taint/product-domain parity, no broad call/link
    scheduler rewrite, and no public API/schema promise.
+
+## ExternalSummary effect-algebra migration checklist
+
+Use this focused checklist when reviewing `.omx/plans/prd-external-summary-effect-algebra.md`
+and `.omx/plans/test-spec-external-summary-effect-algebra.md`:
+
+1. Review the authority-inversion boundary first: the typed effect algebra must
+   be the construction authority, while `external_summary_v3`-style JSON and
+   compat fields are projections only.
+2. Treat these files as the highest-value review slices for linker/memory/
+   scalar/relation migration risk:
+   - `src/abstract_speculate_residual_linker.ml`
+   - `src/abstract_speculate_residual_memory_delta.ml`
+   - `src/abstract_speculate_residual_scalar_call.ml`
+   - `src/abstract_speculate_residual_relation.ml`
+   - `src/abstract_speculate_global_residual_fixpoint.ml`
+3. Treat these tests as the no-v3-authority gate surface:
+   - `test/abstract_speculate_residual_linking_pe_check.ml`
+   - `test/abstract_speculate_residual_linking_oracle_suite_check.ml`
+   - `test/abstract_speculate_residual_scalar_call_unit.ml`
+   - `test/abstract_speculate_residual_memory_delta_unit.ml`
+4. Confirm the migration does not turn compat projections into authority:
+   `external_summary_v1_compat`, `v2-compatible-non-authoritative`,
+   `compat-v1-non-authoritative`, and similar fields must remain diagnostic.
+5. Confirm the relation/oracle checks still reject missing v3 memory authority,
+   missing `delta_chains`, and authority inversions that only satisfy legacy
+   selected-observation paths.
+6. Reconfirm non-goals: no full verifier rewrite, no whole-analysis rewrite,
+   no new dependencies, no proof assistant, and no v3 JSON compatibility
+   effort.
 
 ## Fresh Task 4 evidence
 
@@ -167,3 +256,9 @@ One environment note: running the frozen baseline under the current
 `MetaOCaml-full` switch fails due to a `goblint-cil` constructor-shape mismatch.
 The baseline passes under the existing `sparrow` switch, so no baseline source
 change was made.
+
+## External summary effect algebra boundary
+
+See `doc/effect-algebra-soundness.md` for the soundness taxonomy.  Typed effects
+and projections are the authority boundary; legacy ExternalSummary v3-shaped
+fields are adapter projections and are not derivation truth.

@@ -56,7 +56,9 @@ Sparrow product analyzer.  The only Taint claim is the named bounded
 | Checked cyclic residual scheduling | Implemented only for bounded function-import SCC witnesses with explicit scheduler provenance | `src/abstract_speculate_residual_linker.ml`, `@abstract_speculate_residual_linking_oracle_suite`; reports may call scheduling callgraph-backed only when every scheduler edge carries direct callgraph or residual call-binding provenance. |
 | Residual-linking oracle suite | Implemented as prototype full Sparrow-Itv evidence | `@abstract_speculate_residual_linking_oracle_suite`. |
 | Post-link residual-global fixpoint | Implemented for bounded residual-linking witnesses | `src/abstract_speculate_global_residual_fixpoint.ml` runs a post-link whole-program residual-cell worklist; `src/abstract_speculate_residual_linker.ml` emits `global_residual_*` evidence; `@abstract_speculate_residual_linking_oracle_suite` gates positive, cycle, equivalence, and negative cases. |
+| Initial-fixture full ItvDom.Mem final-cell coverage | Implemented only for `abstract_speculate_residual_linking_pe/importer.c + provider.c` | Linked JSON reports `itv_mem_*` coverage counters, per-cell classifications, `typed_cell_metadata`, and `full_itv_relation_contract`; the PE gate requires `itv_mem_uncovered_cell_count=0` so selected/witness diagnostics cannot pass alone. |
 | Bounded Taint-first product witness | Implemented only for the named `taint_product_pair` oracle-suite witness | ExternalSummary v3 reports `taint_components` and `product_pair_evidence` for one Itv+Taint product-pair; this is not general Taint/product-domain parity. |
+| Residual API model coverage Slice 1 | Implemented only for `memcpy`, `strcpy`, and `strlen` ItvDom.Mem-adjacent witnesses | `@abstract_speculate_residual_api_model_coverage` emits `abstract-speculate-residual-api-model-coverage/v1` with `residual-api-model-coverage/slice-1` provenance, upstream dependency/state-read/seed-read checks, and negative mutations. |
 
 ## Not implemented / not claimed
 
@@ -66,12 +68,48 @@ Sparrow product analyzer.  The only Taint claim is the named bounded
 | Full product-domain staging | The accepted staged semantics remain generally Itv-focused; only a bounded named Taint product-pair witness is staged. | Product-domain fidelity is required before broad Sparrow claims. |
 | Oct/OctImpact and general Taint semantic preservation | Oct/OctImpact remain unsupported; Taint support is limited to `taint_product_pair` bounded evidence and is not general Taint parity. | Product-domain claims require separate evidence and tests. |
 | Arbitrary-C semantic preservation | Fixtures and oracle-suite witnesses bound the evidence. | Current results are not a theorem for all C modules. |
-| General residual summary language | ExternalSummary v2 is prototype/internal and typed for selected return, global-write/read, and pointer-memory effects, but remains witness-bounded. | Broader linking still needs a general effect algebra beyond selected Sparrow-Itv witnesses. |
+| General ItvDom.Mem full-cell coverage | Full final-cell coverage is currently gated for the initial PE fixture, not every Sparrow fixture or arbitrary C program. | Broader fixtures still need the same residual identity/classification audit and negative coverage gates before claiming parity. |
+| General residual summary language | ExternalSummary v3 is prototype/internal and typed for selected return effects plus selected memory-delta chains (`abstract-speculate-external-summary/v3`, `abstract-speculate-external-summary-memory-delta/v3`), but remains witness-bounded. | Broader linking still needs a general effect algebra beyond selected Sparrow-Itv witnesses. |
+| General API/model coverage | Only `memcpy`, `strcpy`, and `strlen` have residual API model coverage rows. | Broader `ApiSem`, allocation/input APIs, arbitrary aliasing, and general ItvDom.Mem semantics still need separate evidence beyond Slice 1. |
 | General cyclic residual linking | Only checked function-import SCC witnesses are supported, and callgraph-backed scheduling is a provenance-gated report claim. Arbitrary recursive call/memory cycles, dependency-only schedules labeled as callgraph-backed, and cyclic effects outside the selected witnesses remain unsupported. | Broader cyclic linking still needs a general call/effect semantics plus oracle evidence beyond the current Sparrow-Itv witness slice. |
 | Full source-level whole-program sparse rerun | Implemented for bounded residual-linking witnesses through a post-link source rerun/provenance adapter plus linked-context global residual evidence. | The claim is witness-bounded and evidence-gated; it is not an arbitrary-C theorem, performance claim, mechanized proof, or stable public schema. |
 | Full dynamic control residualization | Loop/branch shape witnesses exist, but statement-level dynamic control coverage is limited. | Needed for larger program classes. |
 | Mechanized proof | Verification is test/audit/oracle based, not proof-assistant mechanized. | Formal PL claims need a theorem statement and proof. |
 | Stable public artifact schema | The oracle suite is prototype/non-public. | External users should not depend on the current JSON schema. |
+
+## Typed effect algebra migration boundary
+
+The approved redesign tracked by
+`.omx/plans/prd-external-summary-effect-algebra.md` is a breaking, local
+authority inversion plan: typed effects must become the construction authority,
+and JSON / relation witness categories / return-global-pointer artifacts must
+become projections or observations.
+
+For review and documentation purposes, keep the migration slice narrow:
+
+- review the current authority paths in
+  `src/abstract_speculate_residual_linker.ml`,
+  `src/abstract_speculate_residual_memory_delta.ml`,
+  `src/abstract_speculate_residual_scalar_call.ml`, and
+  `src/abstract_speculate_residual_relation.ml`;
+- validate the replacement contract against
+  `.omx/plans/test-spec-external-summary-effect-algebra.md`;
+- treat the new typed effect algebra `.mli` boundaries as planned interfaces,
+  not existing public APIs;
+- preserve the current non-goals: no full verifier rewrite, no whole analysis
+  rewrite, no new dependencies, no proof assistant, and no v3 JSON
+  compatibility effort.
+
+Primary hazards for reviewers:
+
+1. v3 authority leakage through `external_summary_v3` or structural equality on
+   `return_effects`;
+2. in-place “typed” wrappers that do not enforce private constructors or
+   projection-only JSON;
+3. docs accidentally promoting prototype/non-public artifacts to stable schema
+   status; and
+4. taxonomy drift that broadens the scope beyond the bounded memory / alias /
+   heap / struct / array / taint / product observations described in the PRD.
 
 ## Residual-linking claim boundary
 
@@ -154,9 +192,9 @@ while selected diagnostics still pass, ambiguous provider acceptance, invalid
 mixed-role phase ordering, forbidden premerge shortcut leakage, missing oracle
 artifacts, witness identity mismatch, missing provenance, and mixed-role
 dependency cycles.  The suite also rejects ExternalSummary v1-only/compat-only
-artifacts, missing v2 summaries, schema/status downgrades, missing typed
-global/pointer effects, and corrupted selected return/global/pointer effect
-value, location, or provenance.
+artifacts, missing v3 summaries, schema/status downgrades, missing typed
+return effects, missing authoritative memory deltas/chains, and corrupted
+selected return/global/pointer effect value, location, chain, or provenance.
 
 ## Verification commands
 
@@ -166,6 +204,7 @@ Use the MetaOCaml BER switch for active verification:
 cd sparrow-modular-ocaml
 opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_metaocaml_sparse_pe
 opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_residual_linking_pe
+opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_residual_api_model_coverage
 opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_residual_linking_oracle_suite
 opam exec --switch MetaOCaml-full -- dune build @runtest
 ```
@@ -183,14 +222,25 @@ make the current prototype easier to evaluate:
 
 1. stabilize and commit the residual-linking oracle-suite artifacts;
 2. keep the full Sparrow-Itv relation schema documented and prototype/non-public;
-3. replace the prototype selected-witness ExternalSummary v2 rules with a
-   general typed effect algebra only after the witness-bounded contract is stable;
-4. continue factoring residual-linking scheduling into explicit dependency and
+3. keep the prototype selected-witness ExternalSummary v3 rules stable while
+   treating them as non-public, then replace them with a general typed effect
+   algebra only after the witness-bounded contract is stable;
+4. keep residual API model coverage schema-stable for the current Slice 1
+   (`memcpy`, `strcpy`, `strlen`) while treating it as prototype/internal and
+   non-public;
+5. continue factoring residual-linking scheduling into explicit dependency and
    call-binding provenance evidence and keep the stage-2 residual solver as the
    primary runtime;
-5. keep any broader cyclic call/memory semantics out of scope until the reports
+6. keep any broader cyclic call/memory semantics out of scope until the reports
    and oracle suite can prove them with the same provenance and non-overclaim
    gates.
 
 Only after that should the implementation broaden beyond the current ItvDom
 sparse-fixpoint slice.
+
+## External summary authority status
+
+External summary authority is moving to `abstract-speculate-effect-algebra/v1`.
+Legacy ExternalSummary v3 fields are retained only as compatibility projections
+while scalar, memory, relation, and oracle checks migrate to typed projection
+IDs and evidence paths.

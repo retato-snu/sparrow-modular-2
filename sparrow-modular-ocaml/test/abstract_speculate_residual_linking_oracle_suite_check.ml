@@ -16,6 +16,9 @@ module ScalarCall =
 module MemoryDelta =
   Sparrow_modular_ocaml.Abstract_speculate_residual_memory_delta
 
+module EffectSchema =
+  Sparrow_modular_ocaml.Abstract_speculate_effect_schema
+
 let expect cond msg = if not cond then failwith msg
 
 let assoc_field name = function
@@ -305,13 +308,17 @@ let memory_effect_ok summary expected_domain eff =
            (expected_domain ^ ":" ^ string_field "location" eff)
 
 let effect_ids summary =
-  list_field "return_effects" summary
-  |> List.map (string_field "effect_id")
+  (list_field "linked_stage2_input_derivation" summary
+  |> List.map (string_field "external_summary_effect_id"))
+  @ (list_field "return_effects" summary |> List.map (string_field "effect_id"))
+  @ (list_field "typed_effects" summary |> List.map (string_field "effect_id"))
   |> List.filter (( <> ) "")
 
 let taint_component_ok summary component =
   MemoryDelta.validation_ok
     (MemoryDelta.validate_taint_component_json component)
+  && summary <> `Null
+  && string_field "related_effect_id" component <> ""
   && List.mem (string_field "related_effect_id" component) (effect_ids summary)
 
 let product_pair_ok summary evidence =
@@ -320,10 +327,17 @@ let product_pair_ok summary evidence =
     (MemoryDelta.validate_product_pair_evidence_json evidence)
   && taint_component_ok summary component
   && string_field "related_effect_id" component <> ""
-  && list_field "return_effects" summary
-     |> List.exists (fun eff ->
-            string_field "effect_id" eff
-            = string_field "related_effect_id" component)
+  && summary <> `Null
+
+let typed_effect_artifacts_ok summary =
+  list_field "typed_effects" summary <> []
+  && List.for_all
+       (fun eff -> EffectSchema.validation_ok (EffectSchema.validate_defined_artifact_json eff))
+       (list_field "typed_effects" summary)
+  && list_field "typed_projections" summary <> []
+  && List.for_all
+       (fun projection -> EffectSchema.validation_ok (EffectSchema.validate_projection_json projection))
+       (list_field "typed_projections" summary)
 
 let external_summary_ok summary =
   let has_memory_projection =
@@ -353,10 +367,11 @@ let external_summary_ok summary =
            (list_field "delta_chains" summary)
   in
   string_field "schema_version" summary
-  = "abstract-speculate-external-summary/v3"
-  && string_field "summary_api_status" summary = "prototype-internal"
+  = EffectSchema.schema_id
+  && string_field "summary_api_status" summary = EffectSchema.summary_api_status
   && string_field "summary_scope" summary = "sparrow-itv-selected-witness"
   && list_field "effect_domains" summary <> []
+  && typed_effect_artifacts_ok summary
   && list_field "return_effects" summary <> []
   && List.for_all (return_effect_ok summary)
        (list_field "return_effects" summary)
@@ -1222,20 +1237,11 @@ let witness_report witness =
     (not taint_required)
     || string_field "status" taint_product_evidence = "pass"
   in
-  let required_full_itv_fields =
-    [
-      "semantic_universe_manifest";
-      "failure_taxonomy";
-      "canonicalization";
-      "oracle_identity";
-      "memory_delta_validation";
-      "residual_to_origin";
-      "origin_to_residual";
-    ]
+  let full_itv_relation_contract =
+    Relation.full_itv_relation_contract_json full_itv_relation
   in
   let required_full_itv_fields_present =
-    required_full_itv_fields
-    |> List.for_all (fun field -> has_field field full_itv_relation)
+    Relation.full_itv_relation_has_required_fields full_itv_relation
   in
   let taint_evidence = match assoc_field "taint_evidence" witness with Some e -> e | None -> `Null in
   let pass = witness_pass_status obligations residual_obs oracle_obs &&
@@ -1280,7 +1286,8 @@ let witness_report witness =
       "worklist_schedule_count", `Int (List.length (list_evidence_field "global_residual_worklist_schedule" residual));
     ];
     "full_itv_required_fields_present", `Bool required_full_itv_fields_present;
-    "full_itv_required_fields", `List (List.map (fun field -> `String field) required_full_itv_fields);
+    "full_itv_required_fields", `List (List.map (fun field -> `String field) Relation.full_itv_required_fields);
+    "full_itv_relation_contract", full_itv_relation_contract;
     "semantic_universe", member "semantic_universe" full_itv_relation;
     "semantic_universe_manifest", member "semantic_universe_manifest" full_itv_relation;
     "failure_taxonomy", member "failure_taxonomy" full_itv_relation;
@@ -1671,6 +1678,38 @@ let negative_cases witnesses =
                ])
         in
         full_itv_relation_fails id mutated oracle
+    | None -> false
+  in
+  let full_itv_relation_contract_missing_field_false =
+    match loaded with
+    | (id, _category, residual, oracle, _) :: _ ->
+        let relation =
+          Relation.full_itv_semantic_relation_json ~witness_id:id ~residual
+            ~oracle
+        in
+        Relation.full_itv_relation_has_required_fields relation
+        && not
+             (Relation.full_itv_relation_has_required_fields
+                (set_path [ "global_residual_equivalence_status" ] `Null
+                   relation))
+    | [] -> false
+  in
+  let global_residual_equivalence_status_tracks_failures_false =
+    match find "global_write_read" with
+    | Some (id, _category, residual, oracle, _) ->
+        let mutated =
+          residual
+          |> set_path
+               [ "global_residual_fixpoint"; "global_residual_dependency_edges" ]
+               (`List [])
+        in
+        let relation =
+          Relation.full_itv_semantic_relation_json ~witness_id:id
+            ~residual:mutated ~oracle
+        in
+        string_field "status" relation = "fail"
+        && string_field "global_residual_equivalence_status" relation = "fail"
+        && Relation.full_itv_relation_has_required_fields relation
     | None -> false
   in
   let mixed_false =
@@ -2095,6 +2134,10 @@ let negative_cases witnesses =
       non_selected_itv_cell_false;
     false_case "typed_itv_cell_metadata_mismatch_fails_full_relation"
       typed_cell_metadata_mismatch_false;
+    false_case "full_itv_relation_contract_missing_global_status_rejected"
+      full_itv_relation_contract_missing_field_false;
+    false_case "global_residual_equivalence_status_tracks_failures"
+      global_residual_equivalence_status_tracks_failures_false;
     false_case "ambiguous_provider_accepted_incorrectly"
       (log_contains
          (Filename.concat negative_dir "ambiguous_provider.log")
@@ -2376,6 +2419,12 @@ let () =
     "at least one full-Itv relation omitted a required compatibility field";
   expect
     (witness_reports
+    |> List.for_all (fun w ->
+           string_field "status" (member "full_itv_relation_contract" w)
+           = "pass"))
+    "full-Itv semantic relation contract failed";
+  expect
+    (witness_reports
     |> List.exists (fun w ->
            string_field "witness_id" w = "taint_product_pair"
            && string_field "status" (member "taint_product_evidence" w) = "pass")
@@ -2397,6 +2446,7 @@ let () =
       "pass_gate", `String "authoritative";
     ];
     "full_itv_semantic_relation", `List (List.map (fun w -> member "full_itv_semantic_relation" w) witness_reports);
+    "full_itv_relation_contract", `List (List.map (fun w -> member "full_itv_relation_contract" w) witness_reports);
     "global_residual_fixpoint_summary", `Assoc [
       "witness_count", `Int (List.length witness_reports);
       "relation", `String "post-link-whole-program-residual-cells versus premerge-linked-observer";

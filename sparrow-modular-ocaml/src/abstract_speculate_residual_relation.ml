@@ -10,6 +10,7 @@
 module ItvCell = Abstract_speculate_itv_residual_cell
 module ScalarCall = Abstract_speculate_residual_scalar_call
 module MemoryDelta = Abstract_speculate_residual_memory_delta
+module EffectSchema = Abstract_speculate_effect_schema
 
 type observation_domain =
   | Return_value
@@ -413,27 +414,27 @@ let scalar_protocol_failures witness_id residual =
            ("linked_stage2_input_derivation:" ^ witness_id ^ ":" ^ export_name)
            entry)
 
+let memory_delta_summary_reasons summary =
+  if string_field "schema_version" summary = EffectSchema.schema_id then
+    match member "typed_memory_delta_validation" summary with
+    | `Assoc _ as validation ->
+        if string_field "status" validation = "pass" then []
+        else list_field "reasons" validation |> List.map (function `String s -> s | _ -> "typed_memory_delta_validation_failed")
+    | _ -> [ "typed_memory_delta_validation_missing" ]
+  else MemoryDelta.validate_summary_json summary |> MemoryDelta.validation_reasons
+
 let memory_delta_failures witness_id residual =
   list_field "external_summaries" residual
   |> List.mapi (fun index summary ->
-         match MemoryDelta.validate_summary_json summary with
-         | Ok () -> []
-         | Error reasons ->
-             reasons
-             |> List.map (fun reason ->
-                    fail Memory_location Residual_to_oracle reason
-                      ("external_summaries:" ^ witness_id ^ ":"
-                     ^ string_of_int index)))
+         memory_delta_summary_reasons summary
+         |> List.map (fun reason ->
+                fail Memory_location Residual_to_oracle reason
+                  ("external_summaries:" ^ witness_id ^ ":" ^ string_of_int index)))
   |> List.flatten
 
 let memory_delta_validation_json residual =
   let summaries = external_summaries residual in
-  let reasons =
-    summaries
-    |> List.concat_map (fun summary ->
-           MemoryDelta.validate_summary_json summary
-           |> MemoryDelta.validation_reasons)
-  in
+  let reasons = summaries |> List.concat_map memory_delta_summary_reasons in
   let delta_count =
     summaries |> List.fold_left (fun acc s -> acc + List.length (list_field "memory_deltas" s)) 0
   in
@@ -1307,6 +1308,92 @@ let full_itv_non_claims_json =
       `String "no origin Sparrow modification";
       `String "prototype-non-public relation schema";
     ]
+
+let full_itv_required_fields =
+  [
+    "semantic_universe_manifest";
+    "failure_taxonomy";
+    "canonicalization";
+    "oracle_identity";
+    "memory_delta_validation";
+    "global_residual_fixpoint";
+    "global_residual_equivalence_status";
+    "residual_to_origin";
+    "origin_to_residual";
+    "bidirectional_status";
+    "non_claims";
+    "failures";
+    "summary";
+  ]
+
+let has_json_field name json =
+  match assoc_field name json with Some `Null | None -> false | Some _ -> true
+
+let full_itv_relation_missing_required_fields relation =
+  full_itv_required_fields
+  |> List.filter (fun field -> not (has_json_field field relation))
+
+let status_string_ok = function "pass" | "fail" -> true | _ -> false
+
+let full_itv_relation_contract_json relation =
+  let missing_required_fields =
+    full_itv_relation_missing_required_fields relation
+  in
+  let relation_status = string_field "status" relation in
+  let global_status =
+    string_field "global_residual_equivalence_status" relation
+  in
+  let bidirectional = member "bidirectional_status" relation in
+  let residual_to_origin_status =
+    string_field "residual_to_origin_evidence" bidirectional
+  in
+  let origin_to_residual_status =
+    string_field "origin_to_residual_coverage" bidirectional
+  in
+  let bidirectional_status_consistent =
+    match (
+      relation_status,
+      residual_to_origin_status,
+      origin_to_residual_status )
+    with
+    | "pass", "pass", "pass" -> true
+    | "fail", _, _ ->
+        residual_to_origin_status = "fail" || origin_to_residual_status = "fail"
+    | _ -> false
+  in
+  let status_implies_global_gate =
+    relation_status <> "pass" || global_status = "pass"
+  in
+  let status =
+    missing_required_fields = []
+    && status_string_ok relation_status
+    && status_string_ok global_status
+    && bidirectional_status_consistent
+    && status_implies_global_gate
+  in
+  `Assoc
+    [
+      ("status", `String (pass_status status));
+      (
+        "required_fields",
+        `List (List.map (fun field -> `String field) full_itv_required_fields)
+      );
+      (
+        "missing_required_fields",
+        `List
+          (List.map (fun field -> `String field) missing_required_fields)
+      );
+      ("relation_status", `String relation_status);
+      ("global_residual_equivalence_status", `String global_status);
+      (
+        "bidirectional_status_consistent",
+        `Bool bidirectional_status_consistent
+      );
+      ("status_implies_global_gate", `Bool status_implies_global_gate);
+    ]
+
+let full_itv_relation_has_required_fields relation =
+  string_field "status" (full_itv_relation_contract_json relation) = "pass"
 
 let canonical_value_json value =
   ItvCell.canonical_value_json_of_legacy_string value

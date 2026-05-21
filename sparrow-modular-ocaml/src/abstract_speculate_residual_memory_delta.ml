@@ -326,7 +326,7 @@ let delta_chain_json d = [
   chain_entry
     ~index:1
     ~role:"linker"
-    ~actor:"external-summary-v3"
+    ~actor:"typed-effect-algebra-projection"
     ~evidence_path:("external_summaries.memory_deltas:" ^ d.delta_id)
     ~location:d.location.normalized_location
     ~value:d.transition.write_value
@@ -421,9 +421,9 @@ let compatibility_effect_json d =
     "derivation_source", `String "provider-stage2-output";
     "source_evidence_path", `String d.provenance.source_evidence_path;
     "witness_scope", `String witness_scope;
-    "compatibility_projection", `String "external-summary-v2-non-authoritative";
-    "v3_delta_id", `String d.delta_id;
-    "v3_chain_id", `String d.chain_id;
+    "compatibility_projection", `String "typed-effect-projection-non-authoritative";
+    "legacy_delta_id", `String d.delta_id;
+    "legacy_chain_id", `String d.chain_id;
   ]
 
 let validation_ok = function Ok () -> true | Error _ -> false

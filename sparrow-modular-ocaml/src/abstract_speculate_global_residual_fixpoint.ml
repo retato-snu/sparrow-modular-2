@@ -261,13 +261,9 @@ let equation_for_cell seeds cell =
     ]
 
 let source_rerun_field name report = member name report
-
 let source_rerun_bool name report = bool_field name report
-
 let source_rerun_string name report = string_field name report
-
 let source_rerun_status report = source_rerun_string "rerun_status" report
-
 let source_rerun_module_id report = source_rerun_string "module_id" report
 
 let source_rerun_valid report =
@@ -283,11 +279,17 @@ let source_rerun_failure_reasons reports =
     let prefix reason =
       if module_id = "" then reason else module_id ^ ":" ^ reason
     in
-    [ (source_rerun_status report = "completed", "rerun_not_completed");
-      (source_rerun_bool "source_hash_validated" report, "source_hash_not_validated");
-      (source_rerun_bool "source_level_pipeline_executed" report, "source_pipeline_not_executed");
-      (source_rerun_bool "final_rows_produced_by_rerun" report, "final_rows_not_from_rerun");
-      (not (source_rerun_bool "metadata_only" report), "metadata_only_rerun_report") ]
+    [
+      (source_rerun_status report = "completed", "rerun_not_completed");
+      ( source_rerun_bool "source_hash_validated" report,
+        "source_hash_not_validated" );
+      ( source_rerun_bool "source_level_pipeline_executed" report,
+        "source_pipeline_not_executed" );
+      ( source_rerun_bool "final_rows_produced_by_rerun" report,
+        "final_rows_not_from_rerun" );
+      ( not (source_rerun_bool "metadata_only" report),
+        "metadata_only_rerun_report" );
+    ]
     |> List.filter_map (fun (ok, reason) ->
            if ok then None else Some (prefix reason))
   in
@@ -296,16 +298,16 @@ let source_rerun_failure_reasons reports =
     else reports |> List.concat_map module_reasons
   in
   let linked_context_consumed =
-    reports
-    |> List.exists (source_rerun_bool "linked_context_consumed")
+    reports |> List.exists (source_rerun_bool "linked_context_consumed")
   in
   let linked_extern_effects_consumed =
-    reports
-    |> List.exists (source_rerun_bool "linked_extern_effects_consumed")
+    reports |> List.exists (source_rerun_bool "linked_extern_effects_consumed")
   in
   let linked_failures =
-    [ (linked_context_consumed, "linked_context_not_consumed");
-      (linked_extern_effects_consumed, "linked_extern_effects_not_consumed") ]
+    [
+      (linked_context_consumed, "linked_context_not_consumed");
+      (linked_extern_effects_consumed, "linked_extern_effects_not_consumed");
+    ]
     |> List.filter_map (fun (ok, reason) -> if ok then None else Some reason)
   in
   sort_strings (base @ linked_failures)
@@ -314,7 +316,8 @@ let source_rerun_provenance reports =
   reports
   |> List.map (fun report ->
          `Assoc
-           [ ("module_id", source_rerun_field "module_id" report);
+           [
+             ("module_id", source_rerun_field "module_id" report);
              ("source_file", source_rerun_field "source_file" report);
              ("source_hash", source_rerun_field "source_hash" report);
              ("artifact_path", source_rerun_field "artifact_path" report);
@@ -327,7 +330,8 @@ let source_rerun_provenance reports =
                source_rerun_field "final_input_row_count" report );
              ( "final_output_row_count",
                source_rerun_field "final_output_row_count" report );
-             ("rerun_status", source_rerun_field "rerun_status" report) ])
+             ("rerun_status", source_rerun_field "rerun_status" report);
+           ])
   |> sort_json
 
 let worklist_schedule ~iteration_count equations =
@@ -400,11 +404,30 @@ let source_rerun_valid evidence =
      + int_field "rerun_output_row_count" evidence
      > 0
 
-let run ~linked_id ~module_ids ~final_input_table ~final_output_table
-    ~semantic_exports ~linked_environment ~linked_stage2_input_derivation
-    ~phase_log ~linked_input_modules ~linked_cycle_scc_count
-    ~linked_cycle_iteration_count ~linked_cycle_shared_scc_dependencies
-    ~linked_cycle_worklist_schedule ~linked_cycle_final_cells =
+type fixpoint_state = {
+  seeds : Yojson.Safe.t list;
+  derived_cells : Yojson.Safe.t list;
+  equations : Yojson.Safe.t list;
+  equation_ids : Yojson.Safe.t list;
+  dependency_edges : Yojson.Safe.t list;
+  cross_module_dependency_edges : Yojson.Safe.t list;
+  schedule : Yojson.Safe.t list;
+  iteration_count : int;
+  changed_cell_count : int;
+  state_read_count : int;
+  seed_read_count : int;
+  source_reruns : Yojson.Safe.t list;
+  validated_source_reruns : Yojson.Safe.t list;
+  source_rerun_ready : bool;
+  source_rerun_linked_context_consumed : bool;
+  source_level_rerun : bool;
+}
+
+let build_state ~final_input_table ~final_output_table ~semantic_exports
+    ~linked_environment ~linked_stage2_input_derivation ~phase_log
+    ~linked_input_modules ~linked_cycle_scc_count ~linked_cycle_iteration_count
+    ~linked_cycle_shared_scc_dependencies ~linked_cycle_worklist_schedule
+    ~linked_cycle_final_cells =
   let seeds =
     List.map semantic_export_seed semantic_exports
     @ List.map linked_environment_seed linked_environment
@@ -448,7 +471,9 @@ let run ~linked_id ~module_ids ~final_input_table ~final_output_table
   let source_reruns =
     linked_input_modules
     |> List.filter_map (fun module_log ->
-           match member "post_link_source_rerun" (member "execution_log" module_log) with
+           match
+             member "post_link_source_rerun" (member "execution_log" module_log)
+           with
            | `Assoc _ as evidence -> Some evidence
            | _ -> None)
   in
@@ -456,7 +481,8 @@ let run ~linked_id ~module_ids ~final_input_table ~final_output_table
     source_reruns |> List.filter source_rerun_valid |> sort_json
   in
   let source_rerun_ready =
-    source_reruns <> [] && List.length validated_source_reruns = List.length source_reruns
+    source_reruns <> []
+    && List.length validated_source_reruns = List.length source_reruns
   in
   let source_rerun_linked_context_consumed =
     validated_source_reruns <> []
@@ -464,52 +490,90 @@ let run ~linked_id ~module_ids ~final_input_table ~final_output_table
          (fun evidence -> bool_field "linked_context_consumed" evidence)
          validated_source_reruns
   in
-  let source_level_rerun = source_rerun_ready && source_rerun_linked_context_consumed in
+  let source_level_rerun =
+    source_rerun_ready && source_rerun_linked_context_consumed
+  in
+  {
+    seeds;
+    derived_cells;
+    equations;
+    equation_ids;
+    dependency_edges;
+    cross_module_dependency_edges;
+    schedule;
+    iteration_count;
+    changed_cell_count;
+    state_read_count;
+    seed_read_count;
+    source_reruns;
+    validated_source_reruns;
+    source_rerun_ready;
+    source_rerun_linked_context_consumed;
+    source_level_rerun;
+  }
+
+let run ~linked_id ~module_ids ~final_input_table ~final_output_table
+    ~semantic_exports ~linked_environment ~linked_stage2_input_derivation
+    ~phase_log ~linked_input_modules ~linked_cycle_scc_count
+    ~linked_cycle_iteration_count ~linked_cycle_shared_scc_dependencies
+    ~linked_cycle_worklist_schedule ~linked_cycle_final_cells =
+  let state =
+    build_state ~final_input_table ~final_output_table ~semantic_exports
+      ~linked_environment ~linked_stage2_input_derivation ~phase_log
+      ~linked_input_modules ~linked_cycle_scc_count
+      ~linked_cycle_iteration_count ~linked_cycle_shared_scc_dependencies
+      ~linked_cycle_worklist_schedule ~linked_cycle_final_cells
+  in
   `Assoc
     [
       ("schema_version", `String schema_version);
       ("linked_id", `String linked_id);
-      ("global_residual_fixpoint_run", `Bool (equations <> [] && seeds <> []));
+      ( "global_residual_fixpoint_run",
+        `Bool (state.equations <> [] && state.seeds <> []) );
       ("global_residual_fixpoint_scope", `String scope);
       ("global_sparse_fixpoint_component", `String component);
-      ("global_sparse_fixpoint_source_level_rerun", `Bool source_level_rerun);
-      ("global_residual_equation_ids", `List equation_ids);
-      ("global_residual_equations", `List equations);
-      ("global_source_rerun_evidence", `List source_reruns);
-      ("global_source_rerun_validated_evidence", `List validated_source_reruns);
-      ("global_source_rerun_module_count", `Int (List.length source_reruns));
-      ("global_source_rerun_ready_for_relation_gate", `Bool source_rerun_ready);
+      ( "global_sparse_fixpoint_source_level_rerun",
+        `Bool state.source_level_rerun );
+      ("global_residual_equation_ids", `List state.equation_ids);
+      ("global_residual_equations", `List state.equations);
+      ("global_source_rerun_evidence", `List state.source_reruns);
+      ( "global_source_rerun_validated_evidence",
+        `List state.validated_source_reruns );
+      ( "global_source_rerun_module_count",
+        `Int (List.length state.source_reruns) );
+      ( "global_source_rerun_ready_for_relation_gate",
+        `Bool state.source_rerun_ready );
       ( "global_source_rerun_linked_context_consumed",
-        `Bool source_rerun_linked_context_consumed );
-      ("global_residual_seed_cells", `List seeds);
-      ("global_residual_derived_cells", `List derived_cells);
-      ("global_residual_dependency_edges", `List dependency_edges);
+        `Bool state.source_rerun_linked_context_consumed );
+      ("global_residual_seed_cells", `List state.seeds);
+      ("global_residual_derived_cells", `List state.derived_cells);
+      ("global_residual_dependency_edges", `List state.dependency_edges);
       ( "global_residual_cross_module_dependency_edges",
-        `List cross_module_dependency_edges );
-      ("global_residual_exact_cell_dependencies", `List dependency_edges);
+        `List state.cross_module_dependency_edges );
+      ("global_residual_exact_cell_dependencies", `List state.dependency_edges);
       ("global_residual_final_input_table", `List final_input_table);
       ("global_residual_final_output_table", `List final_output_table);
-      ("global_residual_worklist_schedule", `List schedule);
-      ("global_residual_iteration_count", `Int iteration_count);
-      ("global_residual_changed_cell_count", `Int changed_cell_count);
-      ("global_residual_state_read_count", `Int state_read_count);
-      ("global_residual_seed_read_count", `Int seed_read_count);
+      ("global_residual_worklist_schedule", `List state.schedule);
+      ("global_residual_iteration_count", `Int state.iteration_count);
+      ("global_residual_changed_cell_count", `Int state.changed_cell_count);
+      ("global_residual_state_read_count", `Int state.state_read_count);
+      ("global_residual_seed_read_count", `Int state.seed_read_count);
       ("global_residual_worklist_drained", `Bool true);
       ("global_residual_overlay_only", `Bool false);
       ("global_residual_metadata_only", `Bool false);
       ( "global_residual_derived_cells_recomputed",
-        `Bool (derived_cells <> [] && equations <> [] && dependency_edges <> [])
-      );
+        `Bool
+          (state.derived_cells <> [] && state.equations <> []
+          && state.dependency_edges <> []) );
       ("global_residual_authoritative_residual_side", `Bool true);
       ( "global_residual_final_rows_source",
         `String
-          (if source_rerun_ready then
+          (if state.source_rerun_ready then
              "post-link source-level sparse rerun final state"
            else "post-link global residual worklist final state") );
       ( "module_ids",
         `List (List.map (fun id -> `String id) (sort_strings module_ids)) );
-      ( "global_residual_input_modules",
-        `List linked_input_modules );
+      ("global_residual_input_modules", `List linked_input_modules);
       ( "global_residual_input_module_count",
         `Int (List.length linked_input_modules) );
       ( "claim_scope",

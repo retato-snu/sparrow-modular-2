@@ -9,6 +9,9 @@ module Residual = Abstract_speculate_residual_value
 module Solver = Abstract_speculate_residual_solver
 module ScalarCall = Abstract_speculate_residual_scalar_call
 module MemoryDelta = Abstract_speculate_residual_memory_delta
+module EffectAlgebra = Abstract_speculate_effect_algebra
+module EffectSchema = Abstract_speculate_effect_schema
+module EffectProjection = Abstract_speculate_effect_projection
 module CycleScheduler = Abstract_speculate_residual_cycle_scheduler
 module GlobalResidualFixpoint = Abstract_speculate_global_residual_fixpoint
 
@@ -82,7 +85,9 @@ type external_summary_v1_compat = {
   provenance : Yojson.Safe.t;
 }
 
-type external_summary_v3 = {
+type typed_external_summary = {
+  typed_effects : EffectAlgebra.t list;
+  typed_projections : EffectAlgebra.projection list;
   return_effects : Yojson.Safe.t list;
   memory_deltas : Yojson.Safe.t list;
   delta_chains : Yojson.Safe.t list;
@@ -105,7 +110,7 @@ type semantic_export = {
   abstract_return_value : string;
   provider_row : Yojson.Safe.t;
   provider_phase_index : int;
-  external_summary : external_summary_v3;
+  external_summary : typed_external_summary;
 }
 
 type linked_environment_entry = {
@@ -124,6 +129,7 @@ type phase_event = { phase_index : int; module_id : string; event : string }
 type linked_stage2_output = {
   final_input_table : Yojson.Safe.t list;
   final_output_table : Yojson.Safe.t list;
+  global_residual_fixpoint : Yojson.Safe.t;
   execution_log : Yojson.Safe.t;
   shape_witnesses : Yojson.Safe.t list;
   semantic_exports : semantic_export list;
@@ -210,17 +216,33 @@ let external_summary_to_json summary =
   let memory_delta_validation_json =
     `Assoc
       [
-        ("validation", MemoryDelta.validation_result_json memory_delta_validation);
+        ( "validation",
+          MemoryDelta.validation_result_json memory_delta_validation );
         ("checked_delta_count", `Int (List.length summary.memory_deltas));
         ("checked_chain_count", `Int (List.length summary.delta_chains));
         ( "compatibility_projection_status",
-          `String "v2-compatible-non-authoritative" );
+          `String "typed-effect-projection-non-authoritative" );
       ]
+  in
+  let return_projection =
+    match
+      List.find_opt
+        (fun projection ->
+          EffectAlgebra.projection_observation projection = EffectAlgebra.Return_observation)
+        summary.typed_projections
+    with
+    | Some projection -> EffectSchema.projection_to_json projection
+    | None -> `Null
   in
   `Assoc
     [
-      ("schema_version", `String MemoryDelta.external_summary_schema_id);
-      ("summary_api_status", `String MemoryDelta.summary_api_status);
+      ("schema_version", `String EffectSchema.schema_id);
+      ("legacy_memory_delta_schema", `String MemoryDelta.external_summary_schema_id);
+      ("authority_model", `String "typed-effects-before-json-projections");
+      ("typed_effects", `List (List.map EffectSchema.effect_to_json summary.typed_effects));
+      ("typed_projections", `List (List.map EffectSchema.projection_to_json summary.typed_projections));
+      ("return_projection", return_projection);
+      ("summary_api_status", `String EffectSchema.summary_api_status);
       ("summary_scope", `String "sparrow-itv-selected-witness");
       ("memory_delta_schema", `String MemoryDelta.memory_delta_schema_id);
       ( "effect_domains",
@@ -244,7 +266,9 @@ let external_summary_to_json summary =
           (if summary.taint_components = [] then "absent"
            else "bounded named witness only") );
       ( "memory_effect_projection_status",
-        `String "v2-compatible-non-authoritative" );
+        `String "typed-effect-projection-non-authoritative" );
+      ( "legacy_v3_authority_status",
+        `String "projection-only-non-authoritative" );
       ("memory_delta_validation", memory_delta_validation_json);
       ( "typed_memory_delta_validation",
         MemoryDelta.validation_result_json memory_delta_validation );
@@ -378,7 +402,7 @@ let source_rerun_evidence_for_bundle bundle rerun =
       ( "module_artifact_hash_matches_rerun",
         `Bool
           (bundle.result.MetaSparse.source_hash
-          = rerun_result.MetaSparse.source_hash) );
+         = rerun_result.MetaSparse.source_hash) );
     ]
     rerun.MetaSparse.evidence
 
@@ -718,12 +742,125 @@ let make_external_summary ~export_name ~provider_module ~provider_source_hash
           [
             ("status", `String "compat-v1-non-authoritative");
             ("writes", `List []);
-            ("precision", `String "superseded-by-external-summary-v3");
+            ("precision", `String "superseded-by-typed-effect-algebra");
           ];
       provenance;
     }
   in
+  let typed_provenance =
+    match
+      EffectAlgebra.make_provenance ~provider_module ~provider_source_hash
+        ~provider_artifact_path ~provider_phase_index
+        ~export_name
+    with
+    | EffectAlgebra.Defined provenance -> provenance
+    | EffectAlgebra.Undefined reason ->
+        failwith
+          ("invalid typed effect provenance for " ^ export_name ^ ": "
+         ^ EffectAlgebra.undefined_reason_to_string reason)
+  in
+  let typed_return_effect =
+    match
+      EffectAlgebra.make_return ~provenance:typed_provenance
+        ~return_location ~abstract_value:abstract_return_value
+        ~evidence_path:[ "provider_row.return" ]
+    with
+    | EffectAlgebra.Defined eff -> eff
+    | EffectAlgebra.Undefined reason ->
+        failwith
+          ("invalid typed return effect for " ^ export_name ^ ": "
+         ^ EffectAlgebra.undefined_reason_to_string reason)
+  in
+  let typed_memory_effects =
+    memory_effects
+    |> List.filter_map (fun mem_json ->
+           let location =
+             match string_field "location" mem_json with
+             | Some s when s <> "" -> s
+             | _ -> (match string_field "symbol" mem_json with Some s when s <> "" -> s | _ -> export_name)
+           in
+           let kind, alias_evidence =
+             match string_field "domain" mem_json with
+             | Some "pointer-memory-effect" ->
+                 ( EffectAlgebra.Memory_read_write,
+                   Some (Option.value ~default:location (string_field "alias_key" mem_json)) )
+             | Some "global-write-read" -> EffectAlgebra.Memory_read_write, None
+             | Some "memory-delta" -> EffectAlgebra.Memory_read_write, None
+             | _ -> EffectAlgebra.Memory_read_write, None
+           in
+           let value =
+             match string_field "value" mem_json with
+             | Some v when v <> "" -> v
+             | _ -> "memory"
+           in
+           match
+             EffectAlgebra.make_memory_transition ~provenance:typed_provenance
+               ~kind ~location ~value ~alias_evidence
+               ~evidence_path:[ "provider_row.memory"; location ]
+           with
+           | EffectAlgebra.Defined eff -> Some eff
+           | EffectAlgebra.Undefined _ -> None)
+  in
+  let typed_taint_effects =
+    taint_components
+    |> List.filter_map (fun taint ->
+           let value =
+             match string_field "taint_state" taint with Some v -> v | None -> "taint"
+           in
+           match
+             EffectAlgebra.make_taint ~provenance:typed_provenance
+               ~source:"provider_row.return" ~sink:return_location ~taint_state:value
+               ~evidence_path:[ "provider_row.taint_components" ]
+           with
+           | EffectAlgebra.Defined eff -> Some eff
+           | EffectAlgebra.Undefined _ -> None)
+  in
+  let typed_product_effects =
+    product_pair_evidence
+    |> List.filter_map (fun evidence ->
+           let related =
+             EffectAlgebra.effect_id typed_return_effect
+             :: List.map (fun eff -> EffectAlgebra.effect_id eff) typed_taint_effects
+           in
+           let _value =
+             match string_field "taint_witness_id" evidence with
+             | Some v when v <> "" -> v
+             | _ -> abstract_return_value
+           in
+           let _related = related in
+           match
+             EffectAlgebra.make_product_pair ~provenance:typed_provenance
+               ~left_effect:typed_return_effect
+               ~right_effect:(match typed_taint_effects with hd :: _ -> hd | [] -> typed_return_effect)
+               ~evidence_path:[ "provider_row.product_pair_evidence" ]
+           with
+           | EffectAlgebra.Defined eff -> Some eff
+           | EffectAlgebra.Undefined _ -> None)
+  in
+  let typed_effects =
+    typed_return_effect :: typed_memory_effects @ typed_taint_effects @ typed_product_effects
+  in
+  let typed_projections =
+    let collect eff =
+      let attempts =
+        [
+          EffectProjection.observe_return eff;
+          EffectProjection.observe_global eff;
+          EffectProjection.observe_pointer eff;
+          EffectProjection.observe_taint eff;
+          EffectProjection.observe_product_pair eff;
+        ]
+      in
+      attempts
+      |> List.filter_map (function
+           | EffectAlgebra.Defined projection -> Some projection
+           | EffectAlgebra.Undefined _ -> None)
+    in
+    List.concat_map collect typed_effects
+  in
   {
+    typed_effects;
+    typed_projections;
     return_effects = [ return_effect ];
     memory_deltas;
     delta_chains;
@@ -878,13 +1015,24 @@ let linked_environment_for_matches matches
            semantic_export;
          })
 
-let primary_return_effect (summary : external_summary_v3) =
+let legacy_primary_return_effect (summary : typed_external_summary) =
   match summary.return_effects with
   | eff :: _ -> eff
   | [] -> failwith "ExternalSummary v3 has no return effect for linked import"
 
+
+let return_projection_json summary =
+  match
+    List.find_opt
+      (fun projection ->
+        EffectAlgebra.projection_observation projection = EffectAlgebra.Return_observation)
+      summary.typed_projections
+  with
+  | Some projection -> EffectSchema.projection_to_json projection
+  | None -> `Null
+
 let return_effect_id summary =
-  match string_field "effect_id" (primary_return_effect summary) with
+  match string_field "effect_id" (legacy_primary_return_effect summary) with
   | Some id -> id
   | None -> failwith "ExternalSummary v3 return effect missing effect_id"
 
@@ -953,15 +1101,17 @@ let linked_stage2_input_for_importer importer linked_environment =
                      `Int entry.semantic_export.provider_phase_index );
                    ("derivation_source", `String "provider-stage2-output");
                    ( "external_summary_schema",
-                     `String MemoryDelta.external_summary_schema_id );
-                   ("summary_api_status", `String "prototype-internal");
+                     `String EffectSchema.schema_id );
+                   ("summary_api_status", `String EffectSchema.summary_api_status);
                    ( "external_summary_effect_id",
                      `String
                        (return_effect_id entry.semantic_export.external_summary)
                    );
                    ( "return_effect",
-                     primary_return_effect
+                     legacy_primary_return_effect
                        entry.semantic_export.external_summary );
+                   ( "typed_return_projection",
+                     return_projection_json entry.semantic_export.external_summary );
                    ( "external_summary",
                      external_summary_to_json
                        entry.semantic_export.external_summary );
@@ -1029,13 +1179,15 @@ let linked_input_derivation_json linked_environment =
                   output" );
              ("derivation_source", `String "provider-stage2-output");
              ( "external_summary_schema",
-               `String MemoryDelta.external_summary_schema_id );
-             ("summary_api_status", `String "prototype-internal");
+               `String EffectSchema.schema_id );
+             ("summary_api_status", `String EffectSchema.summary_api_status);
              ( "external_summary_effect_id",
                `String (return_effect_id entry.semantic_export.external_summary)
              );
              ( "return_effect",
-               primary_return_effect entry.semantic_export.external_summary );
+               legacy_primary_return_effect entry.semantic_export.external_summary );
+             ( "typed_return_projection",
+               return_projection_json entry.semantic_export.external_summary );
              ("semantic_export", semantic_export_to_json entry.semantic_export);
              ( "external_summary",
                external_summary_to_json entry.semantic_export.external_summary
@@ -1759,7 +1911,7 @@ let execute_modules modules inputs =
     in
     let phase_index = phase_index + if env_events = [] then 0 else 1 in
     let output : StageT.stage2_output =
-      if linked_inputs && is_importer then
+      if linked_inputs && is_importer then (
         let rerun_id =
           "post-link-source-rerun:" ^ module_id ^ ":"
           ^ bundle.result.MetaSparse.source_hash
@@ -1769,8 +1921,9 @@ let execute_modules modules inputs =
             ~stage2_input:input bundle.result.MetaSparse.source
         in
         let rerun_result = rerun.MetaSparse.result in
-        if rerun_result.MetaSparse.source_hash
-           <> bundle.result.MetaSparse.source_hash
+        if
+          rerun_result.MetaSparse.source_hash
+          <> bundle.result.MetaSparse.source_hash
         then
           failwith
             ("post-link source rerun source hash mismatch for " ^ module_id);
@@ -1783,7 +1936,7 @@ let execute_modules modules inputs =
                   source_rerun_evidence_for_bundle bundle rerun );
               ]
               rerun_result.MetaSparse.stage2_output.StageT.execution_log;
-        }
+        })
       else Residual.execute bundle.result.analyzer input
     in
     let execution_event =
@@ -2378,8 +2531,7 @@ let execute_modules modules inputs =
       ~semantic_exports:(List.map semantic_export_to_json semantic_exports)
       ~linked_environment:
         (List.map linked_environment_entry_to_json linked_environment)
-      ~linked_stage2_input_derivation
-      ~linked_input_modules:module_logs
+      ~linked_stage2_input_derivation ~linked_input_modules:module_logs
       ~phase_log:(List.map phase_event_to_json phase_log)
       ~linked_cycle_scc_count ~linked_cycle_iteration_count
       ~linked_cycle_shared_scc_dependencies
@@ -2395,6 +2547,7 @@ let execute_modules modules inputs =
     linked_stage2_input_derivation;
     phase_log;
     linked_residual_analyzer_evidence;
+    global_residual_fixpoint;
     execution_log =
       `Assoc
         [
@@ -2608,14 +2761,14 @@ let output_to_json output =
       ( "linked_residual_analyzer_evidence",
         linked_run_evidence_to_json output.linked_residual_analyzer_evidence );
       ("execution_log", output.execution_log);
-      ( "global_residual_fixpoint",
-        output.execution_log |> member "global_residual_fixpoint" );
+      ("global_residual_fixpoint", output.global_residual_fixpoint);
     ]
 
 let artifact_json ~doc_path analyzer output =
   let modules = analyzer.modules in
   let matched = matched_obligations modules in
   let unresolved = unresolved_obligations modules in
+  let global_residual_fixpoint = output.global_residual_fixpoint in
   `Assoc
     [
       ("schema_version", `String schema_version);
@@ -2687,50 +2840,50 @@ let artifact_json ~doc_path analyzer output =
         `List output.linked_stage2_input_derivation );
       ("phase_log", `List (List.map phase_event_to_json output.phase_log));
       ("linked_output", output_to_json output);
-      ( "global_residual_fixpoint",
-        output.execution_log |> member "global_residual_fixpoint" );
+      ("global_residual_fixpoint", global_residual_fixpoint);
       ( "global_residual_fixpoint_run",
-        output.execution_log |> member "global_residual_fixpoint_run" );
+        global_residual_fixpoint |> member "global_residual_fixpoint_run" );
       ( "global_residual_fixpoint_scope",
-        output.execution_log |> member "global_residual_fixpoint_scope" );
+        global_residual_fixpoint |> member "global_residual_fixpoint_scope" );
       ( "global_sparse_fixpoint_component",
-        output.execution_log |> member "global_sparse_fixpoint_component" );
+        global_residual_fixpoint |> member "global_sparse_fixpoint_component" );
       ( "global_sparse_fixpoint_source_level_rerun",
-        output.execution_log
+        global_residual_fixpoint
         |> member "global_sparse_fixpoint_source_level_rerun" );
       ( "global_residual_iteration_count",
-        output.execution_log |> member "global_residual_iteration_count" );
+        global_residual_fixpoint |> member "global_residual_iteration_count" );
       ( "global_residual_state_read_count",
-        output.execution_log |> member "global_residual_state_read_count" );
+        global_residual_fixpoint |> member "global_residual_state_read_count" );
       ( "global_residual_seed_read_count",
-        output.execution_log |> member "global_residual_seed_read_count" );
+        global_residual_fixpoint |> member "global_residual_seed_read_count" );
       ( "global_residual_worklist_drained",
-        output.execution_log |> member "global_residual_worklist_drained" );
+        global_residual_fixpoint |> member "global_residual_worklist_drained" );
       ( "global_residual_overlay_only",
-        output.execution_log |> member "global_residual_overlay_only" );
+        global_residual_fixpoint |> member "global_residual_overlay_only" );
       ( "global_residual_equation_ids",
-        output.execution_log |> member "global_residual_equation_ids" );
+        global_residual_fixpoint |> member "global_residual_equation_ids" );
       ( "global_residual_seed_cells",
-        output.execution_log |> member "global_residual_seed_cells" );
+        global_residual_fixpoint |> member "global_residual_seed_cells" );
       ( "global_residual_derived_cells",
-        output.execution_log |> member "global_residual_derived_cells" );
+        global_residual_fixpoint |> member "global_residual_derived_cells" );
       ( "global_residual_dependency_edges",
-        output.execution_log |> member "global_residual_dependency_edges" );
+        global_residual_fixpoint |> member "global_residual_dependency_edges" );
       ( "global_residual_cross_module_dependency_edges",
-        output.execution_log
+        global_residual_fixpoint
         |> member "global_residual_cross_module_dependency_edges" );
       ( "global_residual_exact_cell_dependencies",
-        output.execution_log |> member "global_residual_exact_cell_dependencies"
-      );
+        global_residual_fixpoint
+        |> member "global_residual_exact_cell_dependencies" );
       ( "global_residual_worklist_schedule",
-        output.execution_log |> member "global_residual_worklist_schedule" );
+        global_residual_fixpoint |> member "global_residual_worklist_schedule"
+      );
       ( "global_residual_metadata_only",
-        output.execution_log |> member "global_residual_metadata_only" );
+        global_residual_fixpoint |> member "global_residual_metadata_only" );
       ( "global_residual_derived_cells_recomputed",
-        output.execution_log
+        global_residual_fixpoint
         |> member "global_residual_derived_cells_recomputed" );
       ( "global_residual_authoritative_residual_side",
-        output.execution_log
+        global_residual_fixpoint
         |> member "global_residual_authoritative_residual_side" );
       ("residual_linking_performed", `Bool true);
       ( "linked_residual_analyzer_ran",

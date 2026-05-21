@@ -27,6 +27,7 @@
   abstract_speculate_residual_linking_oracle_suite_dump
   abstract_speculate_residual_linking_oracle_suite_check
   abstract_speculate_residual_api_model_check
+  abstract_speculate_effect_algebra_unit
   abstract_speculate_residual_memory_delta_unit
   abstract_speculate_residual_scalar_call_unit
   abstract_speculate_residual_solver_unit
@@ -145,6 +146,7 @@
   (alias real_sparrow_premerge_linked_observer)
   (alias abstract_speculate_metaocaml_sparse_pe)
   (alias abstract_speculate_residual_api_model_coverage)
+  abstract_speculate_effect_algebra_unit.bc
   (alias whole_program_residual_global_fixpoint_verification)))
 
 (rule
@@ -306,6 +308,7 @@
   abstract_speculate_metaocaml_sparse_blind_equal.bc
   abstract_speculate_residual_solver_unit.bc
   abstract_speculate_residual_scalar_call_unit.bc
+  abstract_speculate_effect_algebra_unit.bc
   abstract_speculate_staged_transfer.bc
   abstract_speculate_staged_lattice.bc
   abstract_speculate_staged_bta_fixpoint.bc
@@ -394,20 +397,34 @@
  (deps
   abstract_speculate_residual_linking_pe_dump.bc
   abstract_speculate_residual_linking_pe_check.bc
+  abstract_speculate_effect_algebra_unit.bc
   abstract_speculate_residual_scalar_call_unit.bc
   abstract_speculate_residual_memory_delta_unit.bc
+  abstract_speculate_effect_algebra_unit.bc
   fixtures/abstract_speculate_residual_linking_pe/importer.c
   fixtures/abstract_speculate_residual_linking_pe/provider.c
   ../doc/experiments/abstract-speculate-residual-linking-pe.md)
  (action
   (progn
+   (run ./abstract_speculate_effect_algebra_unit.bc)
    (run ./abstract_speculate_residual_scalar_call_unit.bc)
    (run ./abstract_speculate_residual_memory_delta_unit.bc)
-   (run bash -c "root=$(cd ../../.. && pwd); rm -rf $root/_build/real-sparrow/abstract-speculate-residual-linking-pe")
+   (run ./abstract_speculate_effect_algebra_unit.bc)
+   (run
+    bash
+    -c
+    "root=$(cd ../../.. && pwd); rm -rf $root/_build/real-sparrow/abstract-speculate-residual-linking-pe")
    (run ./abstract_speculate_residual_scalar_call_unit.bc)
    (run ./abstract_speculate_residual_memory_delta_unit.bc)
-   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_linking_pe_dump.bc --module fixtures/abstract_speculate_residual_linking_pe/importer.c --module fixtures/abstract_speculate_residual_linking_pe/provider.c --out $root/_build/real-sparrow/abstract-speculate-residual-linking-pe/active")
-   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_linking_pe_check.bc --repo-root $root --artifact-dir $root/_build/real-sparrow/abstract-speculate-residual-linking-pe/active --report abstract_speculate_residual_linking_pe.report.json"))))
+   (run ./abstract_speculate_effect_algebra_unit.bc)
+   (run
+    bash
+    -c
+    "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_linking_pe_dump.bc --module fixtures/abstract_speculate_residual_linking_pe/importer.c --module fixtures/abstract_speculate_residual_linking_pe/provider.c --out $root/_build/real-sparrow/abstract-speculate-residual-linking-pe/active")
+   (run
+    bash
+    -c
+    "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_linking_pe_check.bc --repo-root $root --artifact-dir $root/_build/real-sparrow/abstract-speculate-residual-linking-pe/active --report abstract_speculate_residual_linking_pe.report.json"))))
 
 (rule
  (alias abstract_speculate_residual_api_model_coverage)
@@ -415,14 +432,25 @@
  (deps
   abstract_speculate_pe_dump.bc
   abstract_speculate_residual_api_model_check.bc
+  abstract_speculate_effect_algebra_unit.bc
   fixtures/abstract_speculate_residual_api_model/api_memcpy_importer.c
   fixtures/abstract_speculate_residual_api_model/api_strcpy_importer.c
   fixtures/abstract_speculate_residual_api_model/api_strlen_importer.c)
  (action
   (progn
-   (run bash -c "root=$(cd ../../.. && pwd); rm -rf $root/_build/real-sparrow/abstract-speculate-residual-api-model")
-   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_pe_dump.bc --module fixtures/abstract_speculate_residual_api_model/api_memcpy_importer.c --module fixtures/abstract_speculate_residual_api_model/api_strcpy_importer.c --module fixtures/abstract_speculate_residual_api_model/api_strlen_importer.c --out $root/_build/real-sparrow/abstract-speculate-residual-api-model/active")
-   (run bash -c "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_api_model_check.bc --repo-root $root --artifact-dir $root/_build/real-sparrow/abstract-speculate-residual-api-model/active --report abstract_speculate_residual_api_model_coverage.report.json"))))
+   (run ./abstract_speculate_effect_algebra_unit.bc)
+   (run
+    bash
+    -c
+    "root=$(cd ../../.. && pwd); rm -rf $root/_build/real-sparrow/abstract-speculate-residual-api-model")
+   (run
+    bash
+    -c
+    "root=$(cd ../../.. && pwd); ./abstract_speculate_pe_dump.bc --module fixtures/abstract_speculate_residual_api_model/api_memcpy_importer.c --module fixtures/abstract_speculate_residual_api_model/api_strcpy_importer.c --module fixtures/abstract_speculate_residual_api_model/api_strlen_importer.c --out $root/_build/real-sparrow/abstract-speculate-residual-api-model/active")
+   (run
+    bash
+    -c
+    "root=$(cd ../../.. && pwd); ./abstract_speculate_residual_api_model_check.bc --repo-root $root --artifact-dir $root/_build/real-sparrow/abstract-speculate-residual-api-model/active --report abstract_speculate_residual_api_model_coverage.report.json"))))
 
 (alias
  (name abstract_speculate_residual_linking_pe)
@@ -435,7 +463,9 @@
   abstract_speculate_residual_linking_pe_dump.bc
   abstract_speculate_residual_linking_oracle_suite_dump.bc
   abstract_speculate_residual_linking_oracle_suite_check.bc
+  abstract_speculate_effect_algebra_unit.bc
   abstract_speculate_residual_memory_delta_unit.bc
+  abstract_speculate_effect_algebra_unit.bc
   fixtures/abstract_speculate_residual_linking_oracle_suite/global_write_read/importer.c
   fixtures/abstract_speculate_residual_linking_oracle_suite/global_write_read/provider.c
   fixtures/abstract_speculate_residual_linking_oracle_suite/pointer_memory_effect/importer.c
@@ -484,12 +514,15 @@
   ../doc/experiments/abstract-speculate-residual-linking-pe.md)
  (action
   (progn
+   (run ./abstract_speculate_effect_algebra_unit.bc)
    (run ./abstract_speculate_residual_memory_delta_unit.bc)
+   (run ./abstract_speculate_effect_algebra_unit.bc)
    (run
     bash
     -c
     "root=$(cd ../../.. && pwd); rm -rf $root/_build/real-sparrow/abstract-speculate-residual-linking-oracle-suite")
    (run ./abstract_speculate_residual_memory_delta_unit.bc)
+   (run ./abstract_speculate_effect_algebra_unit.bc)
    (run
     bash
     -c

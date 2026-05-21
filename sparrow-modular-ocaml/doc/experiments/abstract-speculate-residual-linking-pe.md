@@ -82,10 +82,21 @@ Any future change that weakens one of these gates must downgrade the claim back
 to instrumentation/prototype evidence until an equivalent state-reading
 residual-equation contract is restored.
 
+### ExternalSummary effect-algebra migration boundary
+
+ADR-0007 (`doc/adr/ADR-0007-external-summary-effect-algebra.md`) is the accepted
+authority-inversion boundary for the next ExternalSummary redesign: typed
+effects and typed projections become authoritative, while JSON summaries and
+legacy v3 witness lists become observations.  Until that implementation lands,
+this experiment remains on the v3 memory-delta protocol described below and must
+not present v3 JSON as the final algebra authority.
+
 ### ExternalSummary v3 typed-effect and memory-delta boundary
 
 `ExternalSummary v3` is an internal prototype schema, not a public API.  Its
-scope is `sparrow-itv-selected-witness` and its summary status is
+schema id is `abstract-speculate-external-summary/v3`, its memory-delta
+schema id is `abstract-speculate-external-summary-memory-delta/v3`, its
+witness scope is `selected-sparrow-itv`, and its summary status is
 `prototype-internal`.  Each summary records:
 
 - `return_effects` for provider return cells used by linked importer extern
@@ -99,8 +110,8 @@ scope is `sparrow-itv-selected-witness` and its summary status is
   transition evidence, provider/source/artifact provenance, and source evidence
   paths;
 - `memory_delta_validation`, the auditable report-level validation summary
-  carrying schema id, checked delta/chain counts, compatibility projection
-  status, and failure reasons; and
+  carrying the v3 schema ids, checked delta/chain counts, compatibility
+  projection status, and failure reasons; and
 - `external_summary_v1_compat`, `global_effects`, and `pointer_effects` as
   non-authoritative migration projections only.
 
@@ -167,8 +178,9 @@ Each witness report emits `full_itv_semantic_relation` with:
   oracle identity;
 - ExternalSummary v3 return and memory-delta evidence, with v1/v2
   compatibility projections treated as non-authoritative;
-- `memory_delta_validation` summarizing v3 schema id, checked delta/chain
-  counts, compatibility-projection status, and any validation reasons;
+- `memory_delta_validation` summarizing the exact v3 schema ids, checked
+  delta/chain counts, compatibility-projection status, and any validation
+  reasons;
 - `semantic_universe_manifest` classifying facts as compared, missing,
   intentionally excluded, or expected-but-not-emitted;
 - `failure_taxonomy` with bounded reasons:
@@ -320,7 +332,7 @@ Ambiguous provider choices still fail with diagnostics. Deterministic multiple-i
 - No Oct semantics, and no general Taint/product-domain parity; Taint evidence is bounded to the named `taint_product_pair` witness.
 - No optimized or production-grade residual linker.
 - No final API freeze for the residual module/linker contract.
-- No final general memory/global/call-effect summary language; richer effect observations in the oracle suite remain witness-bounded prototype evidence.
+- No final general memory/global/call-effect summary language; ExternalSummary v3 remains a witness-bounded prototype/internal schema, and richer effect observations in the oracle suite stay bounded to selected Sparrow-Itv witnesses.
 - The scalar-call protocol does not broaden provider discovery, import resolution, or call-graph traversal; it only types and validates scalar evidence selected by the existing linker flow.
 
 ## Coverage gap against frozen Sparrow
@@ -424,10 +436,13 @@ selected witness effects:
 - provenance/call-effect evidence needed to connect provider stage-2 output to
   importer linked stage-2 input.
 
-There is no final general memory/effect summary language yet.  General
-alias-conditioned effects, arbitrary heap/struct/array updates, transitive
-memory summaries, and cross-module memory effects outside the checked witness
-locations remain future coverage.
+There is no final general memory/effect summary language yet.  The stable
+internal names for the current witness schema are
+`abstract-speculate-external-summary/v3` and
+`abstract-speculate-external-summary-memory-delta/v3`; they are not public API
+contracts.  General alias-conditioned effects, arbitrary heap/struct/array
+updates, transitive memory summaries, and cross-module memory effects outside
+the checked witness locations remain future coverage.
 
 ### Interprocedural and callgraph coverage
 
@@ -459,6 +474,11 @@ extern/link obligations with validated stage-2 input or provider-derived linked
 effects.  Slice 1 of residual API model coverage is intentionally narrower than
 the full Sparrow API surface: it covers exactly `memcpy`, `strcpy`, and
 `strlen`, and leaves every other library/API model as an explicit non-claim.
+The stable internal report schema for this slice is
+`abstract-speculate-residual-api-model-coverage/v1`; per-row semantic
+provenance remains `residual-api-model-coverage/slice-1`.  Full-Itv relation
+coverage uses `location-indexed-itv-cell-coverage/v1` for final table cells and
+keeps locations in the semantic key.
 
 The Slice 1 coverage matrix is:
 
@@ -483,8 +503,8 @@ baseline ItvSem/ApiSem model
 This slice deliberately does not claim coverage for `memmove`, `strncpy`,
 `strcat`, `strdup` / `xstrdup`, input-buffer APIs, `fgets`, `scanf`, generic
 allocation APIs, broad `ApiSem` entries, disabled `memset`, arbitrary-C API
-semantics, non-Itv product domains, whole-program equivalence, or a stable
-public API-summary schema.  Unsupported API rows must remain absent or marked
+semantics, non-Itv product domains, whole-program equivalence, or a public
+API-summary schema.  Unsupported API rows must remain absent or marked
 unsupported; setting `covered_api=true` for an API outside `memcpy` / `strcpy` /
 `strlen` is a negative test case, not evidence.
 
@@ -509,6 +529,20 @@ staged lattice evidence, but the stage-2 residual solver does not generally
 execute `ItvDom.Mem` lattice operations for all Sparrow cells.  Coverage must
 expand by lowering more Sparrow semantic dependencies into typed residual
 equations whose final cells are the authoritative source of linked results.
+
+For the initial `abstract_speculate_residual_linking_pe/importer.c +
+provider.c` fixture, the linked report now carries an explicit final-table
+ItvDom.Mem coverage audit rather than relying on selected/witness diagnostics
+alone.  Each source-rerun/oracle-side final Itv cell has a stable residual
+identity and a classification: dynamic residual equation, static
+projection/equation with `typed_cell_metadata`, or uncovered/unsupported with a
+failing reason.  The gate is represented by `itv_mem_coverage_gate` plus
+`itv_mem_total_cell_count`, `itv_mem_residual_equation_cell_count`,
+`itv_mem_static_projection_cell_count`, `itv_mem_uncovered_cell_count`, and
+`itv_mem_uncovered_cells`; the initial fixture must report zero uncovered final
+Itv cells.  The relation checker exposes this through
+`full_itv_relation_contract`, and negative cases ensure selected-observation
+diagnostics cannot mask a full-cell coverage failure.
 
 ### Strategy and frontend coverage
 
@@ -661,3 +695,10 @@ Scope remains intentionally scalar/full-Itv plus the named bounded
 `taint_product_pair` product evidence: Oct semantics, general Taint/product
 parity, broader call-graph rewrites, and proof-system expansion are out of
 scope.
+
+## External summary effect algebra note
+
+Residual-linking external summaries now expose typed effect/projection artifacts
+as the authority boundary.  The v3-shaped witness fields remain transitional
+projection diagnostics only; tests should prefer effect/projection IDs and
+provenance over structural equality of legacy return-effect JSON.

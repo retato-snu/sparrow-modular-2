@@ -57,6 +57,10 @@ val interval_contains_value : string -> int -> bool
 val contains : string -> string -> bool
 val selected_observation_relation_json : witness_id:string -> residual:Yojson.Safe.t -> oracle:Yojson.Safe.t -> Yojson.Safe.t
 val full_itv_semantic_relation_json : witness_id:string -> residual:Yojson.Safe.t -> oracle:Yojson.Safe.t -> Yojson.Safe.t
+val full_itv_required_fields : string list
+val full_itv_relation_missing_required_fields : Yojson.Safe.t -> string list
+val full_itv_relation_contract_json : Yojson.Safe.t -> Yojson.Safe.t
+val full_itv_relation_has_required_fields : Yojson.Safe.t -> bool
 val primary_linkage_ok : Yojson.Safe.t -> bool
 val primary_linkage_check_json : Yojson.Safe.t -> Yojson.Safe.t
 val oracle_suite_obligations :

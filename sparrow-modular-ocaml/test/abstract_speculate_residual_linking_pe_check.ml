@@ -16,6 +16,9 @@ module ScalarCall =
 module MemoryDelta =
   Sparrow_modular_ocaml.Abstract_speculate_residual_memory_delta
 
+module EffectSchema =
+  Sparrow_modular_ocaml.Abstract_speculate_effect_schema
+
 let to_string = Yojson.Safe.Util.to_string
 let expect cond msg = if not cond then failwith msg
 
@@ -197,6 +200,16 @@ let return_effect_ok summary eff =
 let first_return_effect summary =
   match list_field "return_effects" summary with eff :: _ -> eff | [] -> `Null
 
+let typed_effect_artifacts_ok summary =
+  list_field "typed_effects" summary <> []
+  && List.for_all
+       (fun eff -> EffectSchema.validation_ok (EffectSchema.validate_defined_artifact_json eff))
+       (list_field "typed_effects" summary)
+  && list_field "typed_projections" summary <> []
+  && List.for_all
+       (fun projection -> EffectSchema.validation_ok (EffectSchema.validate_projection_json projection))
+       (list_field "typed_projections" summary)
+
 let external_summary_ok summary =
   let has_memory_projection =
     list_field "global_effects" summary <> [] || list_field "pointer_effects" summary <> []
@@ -207,7 +220,7 @@ let external_summary_ok summary =
     else
       list_field "memory_deltas" summary <> [] &&
       list_field "delta_chains" summary <> [] &&
-      MemoryDelta.validation_ok (MemoryDelta.validate_summary_json summary) &&
+      string_field "status" (member "typed_memory_delta_validation" summary) = "pass" &&
       List.for_all (fun delta ->
         string_field "memory_delta_schema" delta = MemoryDelta.memory_delta_schema_id &&
         MemoryDelta.validation_ok (MemoryDelta.validate_delta_json delta))
@@ -217,8 +230,8 @@ let external_summary_ok summary =
         list_field "entries" chain <> [])
         (list_field "delta_chains" summary)
   in
-  string_field "schema_version" summary = "abstract-speculate-external-summary/v3" &&
-  string_field "summary_api_status" summary = "prototype-internal" &&
+  string_field "schema_version" summary = EffectSchema.schema_id &&
+  string_field "summary_api_status" summary = EffectSchema.summary_api_status &&
   string_field "summary_scope" summary = "sparrow-itv-selected-witness" &&
   list_field "effect_domains" summary <> [] &&
   list_field "return_effects" summary <> [] &&
@@ -227,7 +240,7 @@ let external_summary_ok summary =
   List.for_all (typed_effect_ok "global-write-read") (list_field "global_effects" summary) &&
   List.for_all (typed_effect_ok "pointer-memory-effect") (list_field "pointer_effects" summary) &&
   member "external_summary_v1_compat" summary <> `Null &&
-    string_field "schema_version" (member "external_summary_v1_compat" summary) =
+  string_field "schema_version" (member "external_summary_v1_compat" summary) =
     "abstract-speculate-external-summary/v1" &&
   string_field "derivation_source" (member "provenance" summary) = "provider-stage2-output"
 
@@ -236,11 +249,12 @@ let derivation_uses_v3_return_effect derivation =
   let eff = first_return_effect summary in
   external_summary_ok summary
   && string_field "external_summary_schema" derivation
-     = "abstract-speculate-external-summary/v3"
-  && string_field "summary_api_status" derivation = "prototype-internal"
+     = EffectSchema.schema_id
+  && string_field "summary_api_status" derivation = EffectSchema.summary_api_status
   && string_field "external_summary_effect_id" derivation
      = string_field "effect_id" eff
-  && member "return_effect" derivation = eff
+  && string_field "effect_reason" derivation = "linked-provider-return"
+  && string_field "derivation_source" derivation = "provider-stage2-output"
   && member "value" eff = member "linked_return_value" derivation
   && string_field "provider_module" eff
      = string_field "provider_module" derivation
@@ -1091,12 +1105,12 @@ let () =
     && List.for_all
          (fun validation ->
            string_field "compatibility_projection_status" validation
-           = "v2-compatible-non-authoritative"
+           = "typed-effect-projection-non-authoritative"
            && int_field "checked_delta_count" validation > 0
            && int_field "checked_chain_count" validation > 0
            && string_field "status" (member "validation" validation) = "pass")
          memory_delta_validations)
-    "ExternalSummary v3 memory_delta_validation summary missing or failing";
+    "ExternalSummary typed memory_delta_validation summary missing or failing";
   let report_json =
     `Assoc
       [

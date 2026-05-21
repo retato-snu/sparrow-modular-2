@@ -4,6 +4,7 @@
 
 module Json = Yojson.Safe
 module Cell = Abstract_speculate_itv_residual_cell
+module EffectSchema = Abstract_speculate_effect_schema
 
 let schema_id = "abstract-speculate-residual-scalar-call/v1"
 let scalar_scope = "selected-sparrow-itv-scalar-only"
@@ -323,21 +324,41 @@ let validate_v1_extern_scalar_value_json json =
 let validate_linked_derivation_json derivation =
   let return_effect = match assoc_field "return_effect" derivation with Some eff -> eff | None -> `Null in
   let external_summary = match assoc_field "external_summary" derivation with Some s -> s | None -> `Null in
-  let summary_return = match list_field "return_effects" external_summary with eff :: _ -> eff | [] -> `Null in
+  let typed_return_projection =
+    match assoc_field "typed_return_projection" derivation with
+    | Some projection -> projection
+    | None -> (match assoc_field "return_projection" external_summary with Some projection -> projection | None -> `Null)
+  in
+  let legacy_summary_return_effect_id =
+    match assoc_field "return_effects" external_summary with
+    | Some (`List (hd :: _)) -> string_field "effect_id" hd
+    | _ -> ""
+  in
+  let projection_effect_id = string_field "effect_id" typed_return_projection in
+  let return_effect_id = string_field "effect_id" return_effect in
   let return_validation = validate_return_effect_json return_effect in
+  let projection_validation =
+    if typed_return_projection = `Null then Ok ()
+    else Abstract_speculate_effect_schema.validate_projection_json typed_return_projection
+  in
   let metadata = match assoc_field "typed_scalar_metadata" return_effect with Some m -> m | None -> `Null in
   let add cond reason reasons = if cond then reasons else reason :: reasons in
-  let reasons = validation_reasons return_validation in
+  let reasons = validation_reasons return_validation @ Abstract_speculate_effect_schema.validation_reasons projection_validation in
   let reasons =
     reasons
     |> add (string_field "effect_reason" derivation = "linked-provider-return") "effect_reason_mismatch"
     |> add (string_field "derivation_source" derivation = "provider-stage2-output") "derivation_source_mismatch"
     |> add (let schema = string_field "external_summary_schema" derivation in
               schema = "abstract-speculate-external-summary/v2" ||
-              schema = Abstract_speculate_residual_memory_delta.external_summary_schema_id) "external_summary_schema_mismatch"
-    |> add (string_field "summary_api_status" derivation = "prototype-internal") "summary_api_status_mismatch"
-    |> add (string_field "external_summary_effect_id" derivation = string_field "effect_id" return_effect) "derivation_effect_id_mismatch"
-    |> add (return_effect = summary_return) "return_effect_not_structurally_equal_to_summary"
+              schema = Abstract_speculate_residual_memory_delta.external_summary_schema_id ||
+              schema = Abstract_speculate_effect_schema.schema_id) "external_summary_schema_mismatch"
+    |> add (let status = string_field "summary_api_status" derivation in
+              status = "prototype-internal" ||
+              status = Abstract_speculate_effect_schema.summary_api_status) "summary_api_status_mismatch"
+    |> add (return_effect_id <> "") "missing_return_effect_id"
+    |> add (string_field "external_summary_effect_id" derivation = return_effect_id) "derivation_effect_id_mismatch"
+    |> add (legacy_summary_return_effect_id = "" || legacy_summary_return_effect_id = return_effect_id) "return_effect_id_mismatch_with_summary_return_effect"
+    |> add (projection_effect_id = "" || projection_effect_id = return_effect_id) "projection_effect_id_mismatch"
     |> add (int_field "linked_return_value" derivation = int_field "value" return_effect) "linked_return_value_mismatch"
     |> add (string_field "provider_module" derivation = string_field "provider_module" return_effect) "provider_module_mismatch"
     |> add (string_field "export_name" derivation = string_field "symbol" return_effect) "export_name_mismatch"

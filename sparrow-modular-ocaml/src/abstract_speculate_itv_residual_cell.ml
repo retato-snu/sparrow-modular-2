@@ -127,6 +127,12 @@ let metadata_json cell =
   `Assoc [
     "value_model", `String value_model_id;
     "cell_id", `String (cell_id_to_string cell.id);
+    "cell_id_json",
+    `Assoc [
+      "table", `String cell.id.table;
+      "node", `String cell.id.node;
+      "location", `String cell.id.location;
+    ];
     "table", `String cell.id.table;
     "node", `String cell.id.node;
     "location", `String cell.id.location;

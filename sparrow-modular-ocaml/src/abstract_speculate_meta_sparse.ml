@@ -5,6 +5,7 @@
 module StageT = Abstract_speculate_stage_types
 module Residual = Abstract_speculate_residual_value
 module Stage2 = Abstract_speculate_stage2_input
+module ItvCell = Abstract_speculate_itv_residual_cell
 
 module AccessSemItv = AccessSem.Make (ItvSem)
 module AccessAnalysisItv = AccessAnalysis.Make (AccessSemItv)
@@ -278,6 +279,48 @@ type staged_tables = {
   completion : staged_completion;
 }
 
+let final_table_alias = function
+  | "input" -> "final_input_table"
+  | "output" -> "final_output_table"
+  | table -> table
+
+let itv_mem_cell_identity ~table ~node ~location =
+  table ^ ":" ^ node ^ ":" ^ location
+
+let typed_metadata_for_value ~table ~node ~location ~value =
+  match
+    ItvCell.of_legacy_cell_json ~table ~node
+      (`Assoc [ "location", `String location; "value", `String value ])
+  with
+  | Some cell -> ItvCell.metadata_json cell
+  | None ->
+      `Assoc [
+        "value_model", `String ItvCell.value_model_id;
+        "cell_id", `String (itv_mem_cell_identity ~table ~node ~location);
+        "cell_id_json",
+        `Assoc [
+          "table", `String table;
+          "node", `String node;
+          "location", `String location;
+        ];
+        "table", `String table;
+        "node", `String node;
+        "location", `String location;
+        "is_lattice_bottom", `Bool false;
+        "canonical_value", ItvCell.canonical_value_json_of_legacy_string value;
+      ]
+
+let typed_metadata_for_row_fragment ~table ~node fragment =
+  match string_field "location" fragment, string_field "value" fragment with
+  | location, value when location <> "" ->
+      Some (typed_metadata_for_value ~table ~node ~location ~value)
+  | _ -> None
+
+let annotate_row_fragment_with_typed_metadata ~table ~node fragment =
+  match typed_metadata_for_row_fragment ~table ~node fragment with
+  | Some metadata -> with_assoc_fields [ "typed_cell_metadata", metadata ] fragment
+  | None -> fragment
+
 let component_value_json loc stage value =
   `Assoc [
     "location", `String (loc_to_string loc);
@@ -285,10 +328,16 @@ let component_value_json loc stage value =
     "stage", `String stage;
   ]
 
-let row_of_memory node memory =
+let row_of_memory table node memory =
+  let node_s = node_to_string node in
   `Assoc [
-    "node", `String (node_to_string node);
-    "memory", `List (memory |> List.map (fun c -> c.row_fragment) |> sort_json);
+    "node", `String node_s;
+    "memory",
+    `List
+      (memory
+      |> List.map (fun c ->
+           annotate_row_fragment_with_typed_metadata ~table ~node:node_s c.row_fragment)
+      |> sort_json);
   ]
 
 let locs_for_node spec access dug node =
@@ -431,10 +480,16 @@ let replace_cells updates memory =
   let update_keys = List.map (fun cell -> loc_to_string cell.loc) updates in
   updates @ List.filter (fun cell -> not (List.mem (loc_to_string cell.loc) update_keys)) memory
 
-let row_from_cells node cells =
+let row_from_cells table node cells =
+  let node_s = node_to_string node in
   `Assoc [
-    "node", `String (node_to_string node);
-    "memory", `List (cells |> List.map (fun c -> c.row_fragment) |> sort_json);
+    "node", `String node_s;
+    "memory",
+    `List
+      (cells
+      |> List.map (fun c ->
+           annotate_row_fragment_with_typed_metadata ~table ~node:node_s c.row_fragment)
+      |> sort_json);
   ]
 
 let lval_string lv = CilHelper.s_exp (Sparrow_cil.Lval lv)
@@ -571,8 +626,11 @@ let make_dynamic_update
          "derive_from_first_dependency", `Bool derive_from_first_dependency;
        ]
       @ extra_row_fields)
+    |> annotate_row_fragment_with_typed_metadata
+         ~table
+         ~node:(node_to_string node)
   in
-  let row = row_from_cells node [{ loc; cell; row_fragment; component = None }] in
+  let row = row_from_cells table node [{ loc; cell; row_fragment; component = None }] in
   let component =
     component_for_cell
       ~module_id
@@ -1086,7 +1144,7 @@ let staged_sparse_pipeline ~module_id ~source_file ~source_hash spec global acce
   let table_of tbl = nodes |> List.map (fun node -> node, match Hashtbl.find_opt tbl node with Some m -> m | None -> []) in
   let input_memories = table_of input_tbl in
   let output_memories = table_of output_tbl in
-  let rows memories = memories |> List.map (fun (node, memory) -> row_of_memory node memory) |> sort_json in
+  let rows table memories = memories |> List.map (fun (node, memory) -> row_of_memory table node memory) |> sort_json in
   let components memories =
     memories
     |> List.concat_map (fun (_, memory) -> List.filter_map (fun cell -> cell.component) memory)
@@ -1118,8 +1176,8 @@ let staged_sparse_pipeline ~module_id ~source_file ~source_hash spec global acce
            ]))
   in
   {
-    input_rows = rows input_memories;
-    output_rows = rows output_memories;
+    input_rows = rows "input" input_memories;
+    output_rows = rows "output" output_memories;
     residual_input_components = components input_memories;
     residual_output_components = components output_memories;
     facts = (bta_node_facts global extern_nodes @ bta_edge_facts dug extern_nodes @ component_facts "input" input_memories @ component_facts "output" output_memories) |> sort_json;
@@ -1234,6 +1292,7 @@ type stage1_result = {
   analyzer : StageT.residual_analyzer;
   stage2_input : StageT.stage2_input;
   stage2_output : StageT.stage2_output;
+  itv_mem_coverage : Yojson.Safe.t;
 }
 
 type source_rerun_result = {
@@ -1260,9 +1319,143 @@ let linked_extern_effects_consumed input =
 let stage2_input_source_hash input =
   string_field "source_hash" input.StageT.extern_effects
 
+let string_or_int_field name json =
+  match assoc_field name json with
+  | Some (`String s) -> s
+  | Some (`Int n) -> string_of_int n
+  | _ -> ""
+
 let string_list_field name json =
   list_field name json
   |> List.filter_map (function `String s -> Some s | _ -> None)
+
+let itv_mem_equation_ids execution_log =
+  list_field "executed_residuals" execution_log
+  |> List.filter_map (fun execution ->
+       let target = string_field "residual_equation_target" execution in
+       let equation_id = string_field "residual_equation_id" execution in
+       if target = "" || equation_id = "" then None else Some (target, equation_id))
+  |> List.sort_uniq compare
+
+let itv_mem_final_cells local_table rows =
+  let table = final_table_alias local_table in
+  rows
+  |> List.concat_map (fun row ->
+       let node = string_field "node" row in
+       list_field "memory" row
+       |> List.map (fun cell ->
+            let location = string_field "location" cell in
+            let value =
+              match string_or_int_field "value" cell with
+              | "" -> string_or_int_field "normalized_value" cell
+              | value -> value
+            in
+            (local_table, table, node, location, value, cell)))
+
+let itv_mem_coverage_report ~module_id stage2_output =
+  let equation_ids = itv_mem_equation_ids stage2_output.StageT.execution_log in
+  let cells =
+    itv_mem_final_cells "input" stage2_output.StageT.final_input_table
+    @ itv_mem_final_cells "output" stage2_output.StageT.final_output_table
+  in
+  let coverage_cells =
+    cells
+    |> List.map (fun (local_table, table, node, location, value, cell_json) ->
+         let local_identity = itv_mem_cell_identity ~table:local_table ~node ~location in
+         let final_identity = itv_mem_cell_identity ~table ~node ~location in
+         let equation_id = List.assoc_opt local_identity equation_ids in
+         let typed_metadata =
+           match typed_metadata_for_row_fragment ~table ~node cell_json with
+           | Some metadata -> metadata
+           | None -> typed_metadata_for_value ~table ~node ~location ~value
+         in
+         let classification, reason =
+           match equation_id with
+           | Some _ -> ("dynamic-residual-equation", "solver-backed residual equation covered this final Itv cell")
+           | None when location <> "" ->
+               ("static-residual-projection", "stage-1 static projection carries typed Itv cell metadata")
+           | None -> ("unsupported", "final Itv cell lacks a stable table/node/location identity")
+         in
+         let dynamic_fields =
+           match equation_id with
+           | Some id -> [ "residual_equation_id", `String id ]
+           | None -> []
+         in
+         `Assoc
+           ([
+              "cell_id", `String final_identity;
+              "local_cell_id", `String local_identity;
+              "module_id", `String module_id;
+              "table", `String table;
+              "local_table", `String local_table;
+              "node", `String node;
+              "location", `String location;
+              "value", `String value;
+              "classification", `String classification;
+              "reason", `String reason;
+              "typed_cell_metadata", typed_metadata;
+            ]
+           @ dynamic_fields))
+    |> sort_json
+  in
+  let classification_count expected =
+    coverage_cells
+    |> List.fold_left (fun count cell ->
+         if string_field "classification" cell = expected then count + 1 else count)
+         0
+  in
+  let uncovered =
+    coverage_cells
+    |> List.filter (fun cell -> string_field "classification" cell = "unsupported")
+    |> sort_json
+  in
+  let final_ids =
+    cells
+    |> List.map (fun (_, table, node, location, _, _) ->
+         itv_mem_cell_identity ~table ~node ~location)
+    |> sort_strings
+  in
+  let coverage_ids =
+    coverage_cells
+    |> List.map (fun cell -> string_field "cell_id" cell)
+    |> sort_strings
+  in
+  let missing_in_coverage =
+    final_ids |> List.filter (fun id -> not (List.mem id coverage_ids))
+  in
+  let missing_in_final =
+    coverage_ids |> List.filter (fun id -> not (List.mem id final_ids))
+  in
+  let mismatches =
+    (missing_in_coverage
+    |> List.map (fun id ->
+         `Assoc [
+           "cell_id", `String id;
+           "mismatch", `String "emitted-final-cell-missing-producer-coverage";
+         ]))
+    @
+    (missing_in_final
+    |> List.map (fun id ->
+         `Assoc [
+           "cell_id", `String id;
+           "mismatch", `String "producer-coverage-cell-missing-emitted-final-cell";
+         ]))
+    |> sort_json
+  in
+  let uncovered_count = List.length uncovered + List.length mismatches in
+  `Assoc [
+    "itv_mem_coverage_schema", `String "abstract-speculate-itv-mem-coverage/v1";
+    "module_id", `String module_id;
+    "itv_mem_total_cell_count", `Int (List.length coverage_cells);
+    "itv_mem_residual_equation_cell_count", `Int (classification_count "dynamic-residual-equation");
+    "itv_mem_static_projection_cell_count", `Int (classification_count "static-residual-projection");
+    "itv_mem_uncovered_cell_count", `Int uncovered_count;
+    "itv_mem_uncovered_cells", `List (uncovered @ mismatches);
+    "itv_mem_final_cell_set_matches_emitted_tables", `Bool (mismatches = []);
+    "itv_mem_final_cell_set_mismatches", `List mismatches;
+    "itv_mem_coverage_gate", `String (if uncovered_count = 0 then "pass" else "fail");
+    "itv_mem_cells", `List coverage_cells;
+  ]
 
 let rewrite_linked_stage2_input_roots ~extern_roots
     (input : StageT.stage2_input) =
@@ -1366,6 +1559,7 @@ let build_stage1_result ?stage2_input source =
            |> sort_strings)
        ^ "]")
   in
+  let itv_mem_coverage = itv_mem_coverage_report ~module_id stage2_output in
   {
     source;
     module_id;
@@ -1381,6 +1575,7 @@ let build_stage1_result ?stage2_input source =
     analyzer;
     stage2_input;
     stage2_output;
+    itv_mem_coverage;
   }
 
 let run_stage1 source = build_stage1_result source
@@ -1423,6 +1618,13 @@ let source_rerun_evidence ~rerun_id result stage2_input stage2_output =
         ( "rerun_output_row_count",
           `Int (List.length stage2_output.StageT.final_output_table) );
         ("rerun_completion", result.completion);
+        ("itv_mem_coverage", result.itv_mem_coverage);
+        ( "source_rerun_itv_mem_total_cell_count",
+          member "itv_mem_total_cell_count" result.itv_mem_coverage );
+        ( "source_rerun_itv_mem_uncovered_cell_count",
+          member "itv_mem_uncovered_cell_count" result.itv_mem_coverage );
+        ( "source_rerun_itv_mem_coverage_gate",
+          member "itv_mem_coverage_gate" result.itv_mem_coverage );
         ("linked_input_derivation", member "derivation" stage2_input.StageT.extern_effects);
         ( "linked_derivation_source",
           member "linked_derivation_source" stage2_input.StageT.extern_effects
@@ -1446,5 +1648,8 @@ let rerun_stage1_with_stage2_input ~rerun_id ~stage2_input source =
       stage2_input
   in
   let stage2_output = Residual.execute result.analyzer stage2_input in
-  let result = { result with stage2_input; stage2_output } in
+  let itv_mem_coverage =
+    itv_mem_coverage_report ~module_id:result.module_id stage2_output
+  in
+  let result = { result with stage2_input; stage2_output; itv_mem_coverage } in
   source_rerun_evidence ~rerun_id result stage2_input stage2_output
