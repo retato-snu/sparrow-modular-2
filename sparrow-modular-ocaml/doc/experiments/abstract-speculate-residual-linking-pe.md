@@ -534,15 +534,25 @@ For the initial `abstract_speculate_residual_linking_pe/importer.c +
 provider.c` fixture, the linked report now carries an explicit final-table
 ItvDom.Mem coverage audit rather than relying on selected/witness diagnostics
 alone.  Each source-rerun/oracle-side final Itv cell has a stable residual
-identity and a classification: dynamic residual equation, static
-projection/equation with `typed_cell_metadata`, or uncovered/unsupported with a
-failing reason.  The gate is represented by `itv_mem_coverage_gate` plus
-`itv_mem_total_cell_count`, `itv_mem_residual_equation_cell_count`,
-`itv_mem_static_projection_cell_count`, `itv_mem_uncovered_cell_count`, and
-`itv_mem_uncovered_cells`; the initial fixture must report zero uncovered final
+identity and one strict classification:
+`dynamic-residual-equation`, `validated-static-projection`,
+`validated-input-constant`, `validated-local-nonlinked-cell`,
+`metadata-only-projection`, or `unsupported`.  The first four are the only
+covered classifications.  `metadata-only-projection` and `unsupported` are
+uncovered and must not silently count as full coverage.  The gate is represented
+by `itv_mem_coverage_gate` plus `itv_mem_total_cell_count`,
+`itv_mem_residual_equation_cell_count`,
+`itv_mem_validated_static_projection_cell_count`,
+`itv_mem_validated_input_constant_cell_count`,
+`itv_mem_validated_local_nonlinked_cell_count`,
+`itv_mem_metadata_only_projection_cell_count`,
+`itv_mem_unsupported_cell_count`, `itv_mem_uncovered_cell_count`, and
+`itv_mem_uncovered_cells`; selected fixtures must report zero uncovered final
 Itv cells.  The relation checker exposes this through
-`full_itv_relation_contract`, and negative cases ensure selected-observation
-diagnostics cannot mask a full-cell coverage failure.
+`full_itv_relation_contract`, validates source-rerun `itv_mem_coverage`, final
+cell-set agreement, and typed-cell metadata consistency, and negative cases
+ensure selected-observation diagnostics cannot mask a full-cell coverage
+failure.
 
 ### Strategy and frontend coverage
 
@@ -621,7 +631,7 @@ The suite report is explicitly `prototype-non-public`.  Positive witnesses must 
 - residual linked artifact path;
 - premerge observer artifact path;
 - normalized residual and oracle observations;
-- `full_itv_semantic_relation` with `semantic_universe_manifest`, bounded failure taxonomy, canonicalization, oracle identity, and bidirectional `residual_to_origin` / `origin_to_residual` checks;
+- `full_itv_semantic_relation` with `semantic_universe_manifest`, bounded failure taxonomy, canonicalization, oracle identity, and bidirectional `residual_to_origin` / `origin_to_residual` checks; the manifest explicitly lists residual final input cells, residual final output cells, global residual cells, source-rerun `itv_mem_coverage`, and excluded/non-claim cells with reasons;
 - selected-observation relation only under diagnostics/compatibility;
 - row/effect provenance into both artifact families;
 - named obligations with pass/fail status.
@@ -642,7 +652,7 @@ The suite-level report includes these obligations:
 - `cyclic_imported_value_exact_singleton_parity`;
 - `typed_scalar_call_protocol_matches`.
 
-Negative-case coverage is represented in the report for mismatched values/effects, typed scalar protocol metadata/protocol-id mismatches, missing global/pointer observations, a non-selected Itv cell removal that fails the full relation while selected diagnostics still pass, ambiguous providers, invalid mixed-role propagation, shortcut leakage, missing oracle artifacts, witness identity mismatch, missing provenance, source-level removal of an imported cyclic observable sink write, and cycle-evidence falsification.  Bounded Taint-first evidence must additionally fail when Taint evidence is omitted, empty, unrelated to the residual cell/effect, or metadata-only.
+Negative-case coverage is represented in the report for mismatched values/effects, typed scalar protocol metadata/protocol-id mismatches, missing global/pointer observations, source-rerun `itv_mem_coverage` absence/failure/uncovered cells/final-set mismatches/typed metadata mismatches/metadata-only classifications, a non-selected Itv cell removal that fails the full relation while selected diagnostics still pass, ambiguous providers, invalid mixed-role propagation, shortcut leakage, missing oracle artifacts, witness identity mismatch, missing provenance, source-level removal of an imported cyclic observable sink write, and cycle-evidence falsification.  Bounded Taint-first evidence must additionally fail when Taint evidence is omitted, empty, unrelated to the residual cell/effect, or metadata-only.
 
 ## Topology support after the oracle-suite milestone
 

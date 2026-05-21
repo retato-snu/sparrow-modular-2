@@ -31,8 +31,18 @@ let assoc_field name = function
 let string_field name json =
   match assoc_field name json with Some (`String s) -> s | _ -> ""
 
+let bool_field name json =
+  match assoc_field name json with Some (`Bool b) -> b | _ -> false
+
 let list_field name json =
   match assoc_field name json with Some (`List xs) -> xs | _ -> []
+
+let contains_string s sub =
+  let len = String.length s and sub_len = String.length sub in
+  let rec loop i =
+    i + sub_len <= len && (String.sub s i sub_len = sub || loop (i + 1))
+  in
+  sub_len = 0 || loop 0
 
 let assoc_without keys fields =
   fields |> List.filter (fun (key, _) -> not (List.mem key keys))
@@ -1352,6 +1362,42 @@ let itv_mem_final_cells local_table rows =
             in
             (local_table, table, node, location, value, cell)))
 
+let itv_mem_typed_metadata_present = function
+  | `Assoc fields -> ( match List.assoc_opt "typed_cell_metadata" fields with
+      | Some (`Assoc _) -> true
+      | _ -> false )
+  | _ -> false
+
+let itv_mem_typed_metadata_consistent ~table ~node ~location ~value metadata =
+  match metadata with
+  | `Assoc _ ->
+      let expected = typed_metadata_for_value ~table ~node ~location ~value in
+      string_field "value_model" metadata = ItvCell.value_model_id
+      && string_field "table" metadata = table
+      && string_field "node" metadata = node
+      && string_field "location" metadata = location
+      && string_field "cell_id" metadata = string_field "cell_id" expected
+      && member "cell_id_json" metadata = member "cell_id_json" expected
+      && member "canonical_value" metadata = member "canonical_value" expected
+      && not (bool_field "metadata_only" metadata)
+  | _ -> false
+
+let itv_mem_input_constant ~local_table ~value typed_metadata =
+  local_table = "input"
+  && not (contains_string value "dynamic")
+  && not (contains_string value "call-result")
+  && not (contains_string value "api-")
+  &&
+  match member "canonical_value" typed_metadata with
+  | `Assoc _ as canonical -> (
+      match string_field "kind" canonical with
+      | "singleton" | "exact-non-numeric" -> true
+      | _ -> false )
+  | _ -> false
+
+let itv_mem_local_nonlinked_cell ~node ~location =
+  location <> "" && contains_string node "_G_"
+
 let itv_mem_coverage_report ~module_id stage2_output =
   let equation_ids = itv_mem_equation_ids stage2_output.StageT.execution_log in
   let cells =
@@ -1364,17 +1410,65 @@ let itv_mem_coverage_report ~module_id stage2_output =
          let local_identity = itv_mem_cell_identity ~table:local_table ~node ~location in
          let final_identity = itv_mem_cell_identity ~table ~node ~location in
          let equation_id = List.assoc_opt local_identity equation_ids in
+         let source_typed_metadata = member "typed_cell_metadata" cell_json in
+         let expected_typed_metadata =
+           typed_metadata_for_value ~table ~node ~location ~value
+         in
+         let typed_metadata_present =
+           itv_mem_typed_metadata_present cell_json
+         in
+         let source_metadata_tables =
+           if bool_field "stage2_semantics_applied" cell_json then
+             [ local_table; "output" ]
+           else [ local_table ]
+         in
+         let typed_metadata_consistent =
+           typed_metadata_present
+           && List.exists
+                (fun source_table ->
+                  itv_mem_typed_metadata_consistent ~table:source_table ~node
+                    ~location ~value source_typed_metadata)
+                source_metadata_tables
+         in
          let typed_metadata =
-           match typed_metadata_for_row_fragment ~table ~node cell_json with
-           | Some metadata -> metadata
-           | None -> typed_metadata_for_value ~table ~node ~location ~value
+           if typed_metadata_consistent then expected_typed_metadata
+           else source_typed_metadata
          in
          let classification, reason =
            match equation_id with
-           | Some _ -> ("dynamic-residual-equation", "solver-backed residual equation covered this final Itv cell")
-           | None when location <> "" ->
-               ("static-residual-projection", "stage-1 static projection carries typed Itv cell metadata")
-           | None -> ("unsupported", "final Itv cell lacks a stable table/node/location identity")
+           | Some _ when typed_metadata_present && typed_metadata_consistent ->
+               ( "dynamic-residual-equation",
+                 "solver-backed residual equation covered this final Itv cell"
+               )
+           | Some _ ->
+               ( "metadata-only-projection",
+                 "residual equation cell lacks required typed Itv metadata \
+                  consistency" )
+           | None when location = "" ->
+               ( "unsupported",
+                 "final Itv cell lacks a stable table/node/location identity"
+               )
+           | None when not typed_metadata_present ->
+               ( "metadata-only-projection",
+                 "projection has no source typed_cell_metadata and is not \
+                  accepted as full Itv coverage" )
+           | None when not typed_metadata_consistent ->
+               ( "metadata-only-projection",
+                 "projection typed_cell_metadata is inconsistent with the \
+                  final cell identity" )
+           | None
+             when itv_mem_input_constant ~local_table ~value typed_metadata ->
+               ( "validated-input-constant",
+                 "input-side constant has typed Itv identity and canonical \
+                  value evidence" )
+           | None when itv_mem_local_nonlinked_cell ~node ~location ->
+               ( "validated-local-nonlinked-cell",
+                 "local nonlinked cell has typed Itv metadata and is outside \
+                  residual-link obligations" )
+           | None ->
+               ( "validated-static-projection",
+                 "stage-1 static projection carries typed Itv cell metadata \
+                  and value evidence" )
          in
          let dynamic_fields =
            match equation_id with
@@ -1393,6 +1487,9 @@ let itv_mem_coverage_report ~module_id stage2_output =
               "value", `String value;
               "classification", `String classification;
               "reason", `String reason;
+              "typed_cell_metadata_present", `Bool typed_metadata_present;
+              "typed_cell_metadata_consistent",
+              `Bool typed_metadata_consistent;
               "typed_cell_metadata", typed_metadata;
             ]
            @ dynamic_fields))
@@ -1406,7 +1503,10 @@ let itv_mem_coverage_report ~module_id stage2_output =
   in
   let uncovered =
     coverage_cells
-    |> List.filter (fun cell -> string_field "classification" cell = "unsupported")
+    |> List.filter (fun cell ->
+         match string_field "classification" cell with
+         | "unsupported" | "metadata-only-projection" -> true
+         | _ -> false)
     |> sort_json
   in
   let final_ids =
@@ -1445,10 +1545,35 @@ let itv_mem_coverage_report ~module_id stage2_output =
   let uncovered_count = List.length uncovered + List.length mismatches in
   `Assoc [
     "itv_mem_coverage_schema", `String "abstract-speculate-itv-mem-coverage/v1";
+    "itv_mem_coverage_classification_schema",
+    `String "abstract-speculate-itv-mem-coverage-classification/v2";
     "module_id", `String module_id;
     "itv_mem_total_cell_count", `Int (List.length coverage_cells);
     "itv_mem_residual_equation_cell_count", `Int (classification_count "dynamic-residual-equation");
-    "itv_mem_static_projection_cell_count", `Int (classification_count "static-residual-projection");
+    "itv_mem_validated_static_projection_cell_count",
+    `Int (classification_count "validated-static-projection");
+    "itv_mem_validated_input_constant_cell_count",
+    `Int (classification_count "validated-input-constant");
+    "itv_mem_validated_local_nonlinked_cell_count",
+    `Int (classification_count "validated-local-nonlinked-cell");
+    "itv_mem_metadata_only_projection_cell_count",
+    `Int (classification_count "metadata-only-projection");
+    "itv_mem_unsupported_cell_count", `Int (classification_count "unsupported");
+    ( "itv_mem_static_projection_cell_count",
+      `Int
+        (classification_count "validated-static-projection"
+        + classification_count "validated-input-constant"
+        + classification_count "validated-local-nonlinked-cell") );
+    ( "itv_mem_supported_classifications",
+      `List
+        [
+          `String "dynamic-residual-equation";
+          `String "validated-static-projection";
+          `String "validated-input-constant";
+          `String "validated-local-nonlinked-cell";
+        ] );
+    ( "itv_mem_uncovered_classifications",
+      `List [`String "metadata-only-projection"; `String "unsupported"] );
     "itv_mem_uncovered_cell_count", `Int uncovered_count;
     "itv_mem_uncovered_cells", `List (uncovered @ mismatches);
     "itv_mem_final_cell_set_matches_emitted_tables", `Bool (mismatches = []);

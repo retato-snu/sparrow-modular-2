@@ -109,6 +109,47 @@ let () =
     "metadata canonical bounds missing";
   expect (string_field "raw" canonical = "([1,4], typed-itv-residual-cell/v1)")
     "metadata canonical raw missing";
+  let source_metadata =
+    MetaSparse.typed_metadata_for_value ~table:"output" ~node:"n"
+      ~location:"x" ~value:"([1,4], typed-itv-residual-cell/v1)"
+  in
+  expect
+    (MetaSparse.itv_mem_typed_metadata_consistent ~table:"output" ~node:"n"
+       ~location:"x" ~value:"([1,4], typed-itv-residual-cell/v1)"
+       source_metadata)
+    "coverage metadata consistency should accept exact source metadata";
+  expect
+    (not
+       (MetaSparse.itv_mem_typed_metadata_consistent
+          ~table:"final_output_table" ~node:"n" ~location:"x"
+          ~value:"([1,4], typed-itv-residual-cell/v1)" source_metadata))
+    "coverage metadata consistency must not silently retable source metadata";
+  let wrong_location_metadata =
+    match source_metadata with
+    | `Assoc fields ->
+        `Assoc (("location", `String "wrong") :: List.remove_assoc "location" fields)
+    | _ -> source_metadata
+  in
+  expect
+    (not
+       (MetaSparse.itv_mem_typed_metadata_consistent ~table:"output" ~node:"n"
+          ~location:"x" ~value:"([1,4], typed-itv-residual-cell/v1)"
+          wrong_location_metadata))
+    "coverage metadata consistency must reject malformed source metadata identity";
+  let wrong_canonical_metadata =
+    match source_metadata with
+    | `Assoc fields ->
+        `Assoc
+          (("canonical_value", Cell.canonical_value_json_of_legacy_string "([9,9], unit)")
+          :: List.remove_assoc "canonical_value" fields)
+    | _ -> source_metadata
+  in
+  expect
+    (not
+       (MetaSparse.itv_mem_typed_metadata_consistent ~table:"output" ~node:"n"
+          ~location:"x" ~value:"([1,4], typed-itv-residual-cell/v1)"
+          wrong_canonical_metadata))
+    "coverage metadata consistency must reject malformed source metadata value";
   let api_metadata =
     `Assoc
       (MetaSparse.api_extra_fields

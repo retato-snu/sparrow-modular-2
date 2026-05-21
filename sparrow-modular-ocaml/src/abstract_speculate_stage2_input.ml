@@ -4,6 +4,7 @@
 
 module T = Abstract_speculate_stage_types
 module Residual_solver = Abstract_speculate_residual_solver
+module ItvCell = Abstract_speculate_itv_residual_cell
 
 let contains s sub =
   let len = String.length s and sub_len = String.length sub in
@@ -164,21 +165,55 @@ let override_row ~table ~node extern_effects =
         | _ -> None)
   | _ -> None
 
+
+let typed_metadata_for_value ~table ~node ~location ~value =
+  match
+    ItvCell.of_legacy_cell_json ~table ~node
+      (`Assoc [ "location", `String location; "value", `String value ])
+  with
+  | Some cell -> ItvCell.metadata_json cell
+  | None ->
+      `Assoc
+        [
+          "value_model", `String ItvCell.value_model_id;
+          "cell_id", `String (table ^ ":" ^ node ^ ":" ^ location);
+          ( "cell_id_json",
+            `Assoc
+              [
+                "table", `String table;
+                "node", `String node;
+                "location", `String location;
+              ] );
+          "table", `String table;
+          "node", `String node;
+          "location", `String location;
+          "is_lattice_bottom", `Bool false;
+          "canonical_value", ItvCell.canonical_value_json_of_legacy_string value;
+        ]
+
+let refreshed_typed_metadata_field ~table ~node ~location ~value =
+  ( "typed_cell_metadata",
+    typed_metadata_for_value ~table ~node ~location ~value )
+
 let assoc_without keys fields =
   fields |> List.filter (fun (key, _) -> not (List.mem key keys))
 
 let with_fields fields extras =
   `Assoc (extras @ assoc_without (List.map fst extras) fields)
 
-let executed_component default_component residual_arithmetic_value residual_guard_value =
+let executed_component ~table ~node ~location default_component
+    residual_arithmetic_value residual_guard_value =
   match default_component with
   | `Assoc fields ->
-      with_fields fields [
-        "value", `String (string_of_int residual_arithmetic_value);
-        "residual_arithmetic_value", `Int residual_arithmetic_value;
-        "residual_guard_value", `Bool residual_guard_value;
-        "stage2_semantics_applied", `Bool true;
-      ]
+      let value = string_of_int residual_arithmetic_value in
+      with_fields fields
+        [
+          "value", `String value;
+          "residual_arithmetic_value", `Int residual_arithmetic_value;
+          "residual_guard_value", `Bool residual_guard_value;
+          "stage2_semantics_applied", `Bool true;
+          refreshed_typed_metadata_field ~table ~node ~location ~value;
+        ]
   | json -> json
 
 let executed_row ~location default_row executed_component =
@@ -197,15 +232,17 @@ let executed_row ~location default_row executed_component =
   | _ -> default_row
 
 
-let override_json_value ~location ~value json =
+let override_json_value ~table ~node ~location ~value json =
   match json with
   | `Assoc fields ->
+      let value_s = string_of_int value in
       let value_fields =
         [
-          "value", `String (string_of_int value);
+          "value", `String value_s;
           "residual_arithmetic_value", `Int value;
           "stage2_semantics_applied", `Bool true;
           "residual_value_source", `String "residual_state_view";
+          refreshed_typed_metadata_field ~table ~node ~location ~value:value_s;
         ]
       in
       begin
@@ -215,7 +252,7 @@ let override_json_value ~location ~value json =
       end
   | json -> json
 
-let override_row_value ~location ~value row =
+let override_row_value ~table ~node ~location ~value row =
   match row with
   | `Assoc fields ->
       let memory =
@@ -224,19 +261,19 @@ let override_row_value ~location ~value row =
             cells
             |> List.map (fun cell ->
                  match string_field "location" cell with
-                 | Some loc when loc = location -> override_json_value ~location ~value cell
+                 | Some loc when loc = location -> override_json_value ~table ~node ~location ~value cell
                  | _ -> cell)
         | _ -> []
       in
       with_fields fields [ "memory", `List memory ]
   | json -> json
 
-let override_execution_value ~location ~dependency_key ~value execution row =
+let override_execution_value ~table ~node ~location ~dependency_key ~value execution row =
   match execution with
   | `Assoc fields ->
       let executed_component =
         match List.assoc_opt "executed_component" fields with
-        | Some component -> override_json_value ~location ~value component
+        | Some component -> override_json_value ~table ~node ~location ~value component
         | None -> `Null
       in
       with_fields fields
@@ -250,8 +287,13 @@ let override_execution_value ~location ~dependency_key ~value execution row =
   | json -> json
 
 let override_result_value ~location ~dependency_key value (result : T.residual_component_result) =
-  let row = override_row_value ~location ~value result.T.row in
-  let execution = override_execution_value ~location ~dependency_key ~value result.T.execution row in
+  let table = string_field "table" result.T.execution |> Option.value ~default:"" in
+  let node = string_field "node" result.T.execution |> Option.value ~default:"" in
+  let row = override_row_value ~table ~node ~location ~value result.T.row in
+  let execution =
+    override_execution_value ~table ~node ~location ~dependency_key ~value
+      result.T.execution row
+  in
   { T.row; execution }
 
 let execute_staged_component
@@ -276,7 +318,10 @@ let execute_staged_component
     (input : T.stage2_input) =
   if not (structural_source_hash_matches ~source_hash input) then
     failwith "stage2 staged component source hash mismatch";
-  let executed_component = executed_component default_component residual_arithmetic_value residual_guard_value in
+  let executed_component =
+    executed_component ~table ~node ~location default_component
+      residual_arithmetic_value residual_guard_value
+  in
   let row = executed_row ~location default_row executed_component in
   {
     T.row = row;

@@ -146,6 +146,70 @@ let global_residual_report linked =
 let global_residual_report_run linked =
   bool_field "global_residual_fixpoint_run" (global_residual_report linked)
 
+let itv_mem_expected_typed_metadata ~table ~node ~location ~value =
+  match
+    ItvCell.of_legacy_cell_json ~table ~node
+      (`Assoc [ "location", `String location; "value", `String value ])
+  with
+  | Some parsed -> ItvCell.metadata_json parsed
+  | None ->
+      `Assoc
+        [
+          "value_model", `String ItvCell.value_model_id;
+          "cell_id", `String (table ^ ":" ^ node ^ ":" ^ location);
+          ( "cell_id_json",
+            `Assoc
+              [
+                "table", `String table;
+                "node", `String node;
+                "location", `String location;
+              ] );
+          "table", `String table;
+          "node", `String node;
+          "location", `String location;
+          "is_lattice_bottom", `Bool false;
+          "canonical_value", ItvCell.canonical_value_json_of_legacy_string value;
+        ]
+
+let itv_mem_typed_metadata_valid cell =
+  let table = string_field "table" cell in
+  let node = string_field "node" cell in
+  let location = string_field "location" cell in
+  let value = string_field "value" cell in
+  let expected = itv_mem_expected_typed_metadata ~table ~node ~location ~value in
+  match member "typed_cell_metadata" cell with
+  | `Assoc _ as metadata ->
+      string_field "value_model" metadata = ItvCell.value_model_id
+      && string_field "table" metadata = table
+      && string_field "node" metadata = node
+      && string_field "location" metadata = location
+      && string_field "cell_id" metadata = string_field "cell_id" expected
+      && member "cell_id_json" metadata = member "cell_id_json" expected
+      && member "canonical_value" metadata = member "canonical_value" expected
+      && bool_field "typed_cell_metadata_present" cell
+      && bool_field "typed_cell_metadata_consistent" cell
+  | _ -> false
+let source_rerun_itv_mem_coverage_valid evidence =
+  match member "itv_mem_coverage" evidence with
+  | `Assoc _ as coverage ->
+      string_field "itv_mem_coverage_gate" coverage = "pass"
+      && int_field "itv_mem_uncovered_cell_count" coverage = 0
+      && bool_field "itv_mem_final_cell_set_matches_emitted_tables" coverage
+      && list_field "itv_mem_final_cell_set_mismatches" coverage = []
+      && list_field "itv_mem_cells" coverage <> []
+      && List.for_all
+           (fun cell ->
+             let classification = string_field "classification" cell in
+             classification <> "metadata-only-projection"
+             && classification <> "unsupported"
+             && itv_mem_typed_metadata_valid cell)
+           (list_field "itv_mem_cells" coverage)
+  | _ -> false
+
+let source_rerun_itv_mem_coverage_gate_valid report =
+  let evidence = list_field "global_source_rerun_validated_evidence" report in
+  evidence <> [] && List.for_all source_rerun_itv_mem_coverage_valid evidence
+
 let linked_tables linked =
   let output = linked_output linked in
   let global = global_residual_report linked in
@@ -528,6 +592,10 @@ let global_residual_evidence_failures witness_id residual =
        (list_field "global_source_rerun_validated_evidence" report <> [])
        "missing_source_level_rerun_evidence"
        "global_residual_fixpoint.source_rerun_evidence"
+  |> add
+       (source_rerun_itv_mem_coverage_gate_valid report)
+       "source_rerun_itv_mem_coverage_gate_failed"
+       "global_residual_fixpoint.source_rerun_itv_mem_coverage"
   |> add (seed_cells <> []) "missing_global_residual_seed_cells"
        "global_residual_seed_cells"
   |> add (derived_cells <> []) "missing_global_residual_derived_cells"
@@ -1755,6 +1823,62 @@ let full_itv_semantic_relation_json ~witness_id ~residual ~oracle =
     @ completion_status_facts witness_id residual oracle
   in
   let residual_facts = residual_table_facts @ export_facts in
+  let residual_final_input_facts =
+    residual_table_facts
+    |> List.filter (fun fact -> fact_table fact = "final_input_table")
+  in
+  let residual_final_output_facts =
+    residual_table_facts
+    |> List.filter (fun fact -> fact_table fact = "final_output_table")
+  in
+  let global_report = global_residual_report residual in
+  let global_residual_cells =
+    list_field "global_residual_derived_cells" global_report
+  in
+  let source_rerun_itv_mem_coverage =
+    list_field "global_source_rerun_validated_evidence" global_report
+    |> List.map (fun evidence ->
+         `Assoc
+           [
+             ("module_id", member "module_id" evidence);
+             ("source_file", member "source_file" evidence);
+             ( "source_rerun_itv_mem_coverage_gate",
+               member "source_rerun_itv_mem_coverage_gate" evidence );
+             ( "source_rerun_itv_mem_uncovered_cell_count",
+               member "source_rerun_itv_mem_uncovered_cell_count" evidence );
+             ("itv_mem_coverage", member "itv_mem_coverage" evidence);
+           ])
+  in
+  let excluded_non_claim_cells =
+    [
+      `Assoc
+        [
+          ("category", `String "domain");
+          ("reason", `String "Oct excluded by user scope");
+        ];
+      `Assoc
+        [
+          ("category", `String "domain");
+          ( "reason",
+            `String
+              "Taint only included for named bounded product-pair witness \
+               evidence, not general relation parity" );
+        ];
+      `Assoc
+        [
+          ("category", `String "claim");
+          ("reason", `String "arbitrary-C/whole-program equivalence excluded");
+        ];
+      `Assoc
+        [
+          ("category", `String "schema");
+          ( "reason",
+            `String
+              "coverage and semantic-universe manifests remain \
+               internal/prototype, not public stable schema" );
+        ];
+    ]
+  in
   let oracle_locations =
     oracle_table_facts |> List.map fact_location |> sort_uniq
   in
@@ -1851,6 +1975,19 @@ let full_itv_semantic_relation_json ~witness_id ~residual ~oracle =
             (List.map
                (manifest_entry ~classification:"compared")
                compared_facts) );
+        ( "residual_final_input_cells",
+          `List
+            (List.map
+               (manifest_entry ~classification:"residual-final-input-cell")
+               residual_final_input_facts) );
+        ( "residual_final_output_cells",
+          `List
+            (List.map
+               (manifest_entry ~classification:"residual-final-output-cell")
+               residual_final_output_facts) );
+        ("global_residual_cells", `List global_residual_cells);
+        ( "source_rerun_itv_mem_coverage",
+          `List source_rerun_itv_mem_coverage );
         ( "missing",
           `List
             (List.map
@@ -1859,29 +1996,8 @@ let full_itv_semantic_relation_json ~witness_id ~residual ~oracle =
             @ List.map
                 (manifest_entry ~classification:"missing_from_origin")
                 residual_missing) );
-        ( "intentionally_excluded",
-          `List
-            [
-              `Assoc
-                [
-                  ("category", `String "domain");
-                  ("reason", `String "Oct excluded by user scope");
-                ];
-              `Assoc
-                [
-                  ("category", `String "domain");
-                  ( "reason",
-                    `String
-                      "Taint only included for named bounded product-pair \
-                       witness evidence, not general relation parity" );
-                ];
-              `Assoc
-                [
-                  ("category", `String "claim");
-                  ( "reason",
-                    `String "arbitrary-C/whole-program equivalence excluded" );
-                ];
-            ] );
+        ("intentionally_excluded", `List excluded_non_claim_cells);
+        ("excluded_non_claim_cells", `List excluded_non_claim_cells);
         ("expected_but_not_emitted", `List []);
       ]
   in

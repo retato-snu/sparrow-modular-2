@@ -142,12 +142,21 @@ for `abstract_speculate_residual_linking_pe/importer.c + provider.c` only:
    `_build/real-sparrow/abstract-speculate-residual-linking-pe/active/abstract-speculate-residual-linking-pe.linked.json`.
 2. Confirm the linked JSON contains `itv_mem_coverage_gate=pass`,
    `itv_mem_total_cell_count`, `itv_mem_residual_equation_cell_count`,
-   `itv_mem_static_projection_cell_count`, `itv_mem_uncovered_cell_count=0`,
+   `itv_mem_static_projection_cell_count`,
+   `itv_mem_validated_static_projection_cell_count`,
+   `itv_mem_validated_input_constant_cell_count`,
+   `itv_mem_validated_local_nonlinked_cell_count`,
+   `itv_mem_metadata_only_projection_cell_count=0`,
+   `itv_mem_unsupported_cell_count=0`, `itv_mem_uncovered_cell_count=0`,
    and an empty `itv_mem_uncovered_cells` list for the final Itv cell audit.
 3. Confirm every covered final-table cell has stable identity fields
-   (`table`, `node`, `location`, and value), a classification, a
-   `residual_equation_id` when dynamic, and `typed_cell_metadata` when covered
-   as a static projection/equation.
+   (`table`, `node`, `location`, and value), one of the supported
+   classifications (`dynamic-residual-equation`,
+   `validated-static-projection`, `validated-input-constant`,
+   `validated-local-nonlinked-cell`), a `residual_equation_id` when dynamic,
+   and `typed_cell_metadata_present=true` plus
+   `typed_cell_metadata_consistent=true`. `metadata-only-projection` and
+   `unsupported` are uncovered classifications and must fail the gate.
 4. Confirm the PE and oracle relation outputs include
    `full_itv_relation_contract` and that negative cases reject missing coverage
    evidence, typed metadata/value mutations, and added uncovered final-table

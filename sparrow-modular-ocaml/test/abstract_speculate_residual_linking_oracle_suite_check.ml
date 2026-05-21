@@ -19,6 +19,9 @@ module MemoryDelta =
 module EffectSchema =
   Sparrow_modular_ocaml.Abstract_speculate_effect_schema
 
+module ItvCell =
+  Sparrow_modular_ocaml.Abstract_speculate_itv_residual_cell
+
 let expect cond msg = if not cond then failwith msg
 
 let assoc_field name = function
@@ -640,6 +643,67 @@ let string_evidence_field name residual =
 let list_evidence_field name residual =
   match evidence_field name residual with Some (`List xs) -> xs | _ -> []
 
+let itv_mem_expected_typed_metadata ~table ~node ~location ~value =
+  match
+    ItvCell.of_legacy_cell_json ~table ~node
+      (`Assoc [ "location", `String location; "value", `String value ])
+  with
+  | Some parsed -> ItvCell.metadata_json parsed
+  | None ->
+      `Assoc
+        [
+          "value_model", `String ItvCell.value_model_id;
+          "cell_id", `String (table ^ ":" ^ node ^ ":" ^ location);
+          ( "cell_id_json",
+            `Assoc
+              [
+                "table", `String table;
+                "node", `String node;
+                "location", `String location;
+              ] );
+          "table", `String table;
+          "node", `String node;
+          "location", `String location;
+          "is_lattice_bottom", `Bool false;
+          "canonical_value", ItvCell.canonical_value_json_of_legacy_string value;
+        ]
+
+let itv_mem_coverage_cell_valid cell =
+  let table = string_field "table" cell in
+  let node = string_field "node" cell in
+  let location = string_field "location" cell in
+  let value = string_field "value" cell in
+  let expected = itv_mem_expected_typed_metadata ~table ~node ~location ~value in
+  let classification = string_field "classification" cell in
+  match member "typed_cell_metadata" cell with
+  | `Assoc _ as metadata ->
+      classification <> "metadata-only-projection"
+      && classification <> "unsupported"
+      && string_field "value_model" metadata = ItvCell.value_model_id
+      && string_field "table" metadata = table
+      && string_field "node" metadata = node
+      && string_field "location" metadata = location
+      && string_field "cell_id" metadata = string_field "cell_id" expected
+      && member "cell_id_json" metadata = member "cell_id_json" expected
+      && member "canonical_value" metadata = member "canonical_value" expected
+      && bool_field "typed_cell_metadata_present" cell
+      && bool_field "typed_cell_metadata_consistent" cell
+  | _ -> false
+let source_rerun_itv_mem_coverage_valid evidence =
+  match member "itv_mem_coverage" evidence with
+  | `Assoc _ as coverage ->
+      string_field "itv_mem_coverage_gate" coverage = "pass"
+      && int_field "itv_mem_uncovered_cell_count" coverage = 0
+      && bool_field "itv_mem_final_cell_set_matches_emitted_tables" coverage
+      && list_field "itv_mem_final_cell_set_mismatches" coverage = []
+      && list_field "itv_mem_cells" coverage <> []
+      && List.for_all itv_mem_coverage_cell_valid
+           (list_field "itv_mem_cells" coverage)
+  | _ -> false
+
+let source_rerun_itv_mem_coverage_gate_valid evidence =
+  evidence <> [] && List.for_all source_rerun_itv_mem_coverage_valid evidence
+
 let global_final_cells residual =
   let candidates =
     ["global_residual_final_cells";
@@ -665,6 +729,8 @@ let global_residual_fixpoint_evidence_passes witness_id residual =
   bool_evidence_field "global_source_rerun_ready_for_relation_gate" residual &&
   bool_evidence_field "global_source_rerun_linked_context_consumed" residual &&
   list_evidence_field "global_source_rerun_validated_evidence" residual <> [] &&
+  source_rerun_itv_mem_coverage_gate_valid
+    (list_evidence_field "global_source_rerun_validated_evidence" residual) &&
   list_evidence_field "global_residual_equation_ids" residual <> [] &&
   list_evidence_field "global_residual_seed_cells" residual <> [] &&
   list_evidence_field "global_residual_derived_cells" residual <> [] &&
@@ -1089,6 +1155,8 @@ let global_residual_evidence_passes witness_id residual =
   && bool_field "global_source_rerun_ready_for_relation_gate" report
   && bool_field "global_source_rerun_linked_context_consumed" report
   && list_field "global_source_rerun_validated_evidence" report <> []
+  && source_rerun_itv_mem_coverage_gate_valid
+       (list_field "global_source_rerun_validated_evidence" report)
   && seed_cells <> [] && derived_cells <> [] && equations <> []
   && dependency_edges <> [] && cross_edges <> []
   && List.for_all (fun edge -> bool_field "cross_module" edge) cross_edges
@@ -2059,6 +2127,60 @@ let negative_cases witnesses =
     |> set_path ["global_source_rerun_linked_context_consumed"] (`Bool false)
     |> set_path ["global_source_rerun_validated_evidence"] (`List [])
   in
+  let mutate_first_source_rerun_evidence path value residual =
+    match list_field "global_source_rerun_validated_evidence" residual with
+    | first :: rest ->
+        set_path [ "global_source_rerun_validated_evidence" ]
+          (`List (set_path path value first :: rest))
+          residual
+    | [] -> residual
+  in
+  let mutate_first_source_rerun_coverage path value residual =
+    match list_field "global_source_rerun_validated_evidence" residual with
+    | first :: rest ->
+        let coverage = member "itv_mem_coverage" first in
+        let first =
+          set_path [ "itv_mem_coverage" ] (set_path path value coverage) first
+        in
+        set_path [ "global_source_rerun_validated_evidence" ]
+          (`List (first :: rest))
+          residual
+    | [] -> residual
+  in
+  let mutate_first_source_rerun_coverage_cell path value residual =
+    match list_field "global_source_rerun_validated_evidence" residual with
+    | first :: rest -> (
+        let coverage = member "itv_mem_coverage" first in
+        match list_field "itv_mem_cells" coverage with
+        | cell :: cell_rest ->
+            let coverage =
+              set_path [ "itv_mem_cells" ]
+                (`List (set_path path value cell :: cell_rest))
+                coverage
+            in
+            let first = set_path [ "itv_mem_coverage" ] coverage first in
+            set_path [ "global_source_rerun_validated_evidence" ]
+              (`List (first :: rest))
+              residual
+        | [] -> residual)
+    | [] -> residual
+  in
+  let selected_observation_diag_cannot_mask_itv_coverage_failure =
+    match find "global_write_read" with
+    | Some (id, _category, residual, oracle, _) ->
+        let mutation =
+          mutate_first_source_rerun_coverage [ "itv_mem_coverage_gate" ]
+            (`String "fail")
+        in
+        let mutated =
+          set_path [ "global_residual_fixpoint" ]
+            (mutation (member "global_residual_fixpoint" residual))
+            residual
+        in
+        full_itv_relation_fails id mutated oracle
+        && selected_relation_passes id mutated oracle
+    | None -> false
+  in
   let set_final_round_changed residual =
     let rounds = list_field "linked_cycle_rounds" residual in
     match List.rev rounds with
@@ -2267,6 +2389,45 @@ let negative_cases witnesses =
       (global_evidence_fails metadata_only_global_report);
     false_case "global_source_rerun_claim_without_provenance_rejected"
       (global_evidence_fails source_level_rerun_claim_without_provenance);
+    false_case "global_source_rerun_missing_itv_mem_coverage_rejected"
+      (global_evidence_fails
+         (mutate_first_source_rerun_evidence [ "itv_mem_coverage" ] `Null));
+    false_case "global_source_rerun_itv_mem_coverage_gate_fail_rejected"
+      (global_evidence_fails
+         (mutate_first_source_rerun_coverage [ "itv_mem_coverage_gate" ]
+            (`String "fail")));
+    false_case "global_source_rerun_itv_mem_uncovered_cells_rejected"
+      (global_evidence_fails
+         (mutate_first_source_rerun_coverage
+            [ "itv_mem_uncovered_cell_count" ]
+            (`Int 1)));
+    false_case "global_source_rerun_itv_mem_final_set_mismatch_rejected"
+      (global_evidence_fails
+         (mutate_first_source_rerun_coverage
+            [ "itv_mem_final_cell_set_matches_emitted_tables" ]
+            (`Bool false)));
+    false_case "global_source_rerun_itv_mem_metadata_missing_rejected"
+      (global_evidence_fails
+         (mutate_first_source_rerun_coverage_cell
+            [ "typed_cell_metadata_present" ]
+            (`Bool false)));
+    false_case "global_source_rerun_itv_mem_metadata_inconsistent_rejected"
+      (global_evidence_fails
+         (mutate_first_source_rerun_coverage_cell
+            [ "typed_cell_metadata"; "location" ]
+            (`String "(wrong,location)")));
+    false_case "global_source_rerun_itv_mem_metadata_canonical_value_rejected"
+      (global_evidence_fails
+         (mutate_first_source_rerun_coverage_cell
+            [ "typed_cell_metadata"; "canonical_value" ]
+            (ItvCell.canonical_value_json_of_legacy_string "([999,999], unit)")));
+    false_case "global_source_rerun_itv_mem_metadata_only_projection_rejected"
+      (global_evidence_fails
+         (mutate_first_source_rerun_coverage_cell [ "classification" ]
+            (`String "metadata-only-projection")));
+    false_case
+      "selected_observation_diag_cannot_mask_itv_coverage_failure"
+      selected_observation_diag_cannot_mask_itv_coverage_failure;
     false_case "global_residual_apply_equivalent_only_rejected"
       (global_evidence_fails apply_equivalent_only_global_report);
     false_case "global_source_rerun_without_linked_context_rejected"
