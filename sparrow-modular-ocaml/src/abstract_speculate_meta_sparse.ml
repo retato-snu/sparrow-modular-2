@@ -486,6 +486,31 @@ let dynamic_staged_cell ~loc ~abstract_value ~semantic_source ~expression_code =
     ~semantic_source
     ~code:expression_code
 
+let producer_evidence_schema = "abstract-speculate-itv-producer-evidence/v1"
+
+let dynamic_row_producer_evidence ~table ~node ~loc ~transfer_event
+    ~semantic_expression ~semantic_guard ~residual_dependencies
+    ~derive_from_first_dependency =
+  `Assoc
+    [
+      "schema_version", `String producer_evidence_schema;
+      "producer_kind", `String "staged-transfer-residual-producer";
+      "claim_boundary", `String "sparrow-itv-fixture-evidence-only";
+      "target_table", `String table;
+      "target_node", `String (node_to_string node);
+      "target_location", `String (loc_to_string loc);
+      "transfer_event", `String transfer_event;
+      "semantic_expression", `String semantic_expression;
+      "semantic_guard", `String semantic_guard;
+      "residual_dependencies",
+      `List
+        (List.map
+           (fun dep -> `String (StageT.residual_cell_key dep))
+           residual_dependencies);
+      "derive_from_first_dependency", `Bool derive_from_first_dependency;
+      "source", `String "abstract_speculate_meta_sparse.make_dynamic_update";
+    ]
+
 let replace_cells updates memory =
   let update_keys = List.map (fun cell -> loc_to_string cell.loc) updates in
   updates @ List.filter (fun cell -> not (List.mem (loc_to_string cell.loc) update_keys)) memory
@@ -634,6 +659,10 @@ let make_dynamic_update
          "fixpoint_iteration", `Int iteration;
          "residual_dependencies", `List (List.map (fun dep -> `String (StageT.residual_cell_key dep)) residual_dependencies);
          "derive_from_first_dependency", `Bool derive_from_first_dependency;
+         "producer_evidence",
+         dynamic_row_producer_evidence ~table ~node ~loc ~transfer_event
+           ~semantic_expression ~semantic_guard ~residual_dependencies
+           ~derive_from_first_dependency;
        ]
       @ extra_row_fields)
     |> annotate_row_fragment_with_typed_metadata
@@ -1398,6 +1427,66 @@ let itv_mem_input_constant ~local_table ~value typed_metadata =
 let itv_mem_local_nonlinked_cell ~node ~location =
   location <> "" && contains_string node "_G_"
 
+let itv_mem_supported_classification = function
+  | "dynamic-residual-equation"
+  | "validated-static-projection"
+  | "validated-input-constant"
+  | "validated-local-nonlinked-cell" ->
+      true
+  | _ -> false
+
+let itv_mem_producer_kind = function
+  | "dynamic-residual-equation" -> "residual-equation-producer"
+  | "validated-static-projection" -> "stage1-static-projection-producer"
+  | "validated-input-constant" -> "input-constant-producer"
+  | "validated-local-nonlinked-cell" -> "local-nonlinked-producer"
+  | "metadata-only-projection" -> "metadata-only-uncovered"
+  | "unsupported" -> "unsupported-uncovered"
+  | other -> "unknown-classification:" ^ other
+
+let itv_mem_cell_producer_evidence ~module_id ~local_table ~table ~node
+    ~location ~value ~classification ~reason ~typed_metadata_present
+    ~typed_metadata_consistent ~equation_id cell_json =
+  let source_producer =
+    match member "producer_evidence" cell_json with
+    | `Assoc _ as evidence -> evidence
+    | _ -> `Null
+  in
+  let dynamic_fields =
+    match equation_id with
+    | Some id ->
+        [
+          "residual_equation_id", `String id;
+          "residual_equation_target",
+          `String (itv_mem_cell_identity ~table:local_table ~node ~location);
+        ]
+    | None -> []
+  in
+  `Assoc
+    ([
+       "schema_version", `String producer_evidence_schema;
+       "producer_kind", `String (itv_mem_producer_kind classification);
+       "classification", `String classification;
+       "accepted_for_full_itv_coverage",
+       `Bool (itv_mem_supported_classification classification);
+       "claim_boundary", `String "sparrow-itv-fixture-evidence-only";
+       "module_id", `String module_id;
+       "table", `String table;
+       "local_table", `String local_table;
+       "node", `String node;
+       "location", `String location;
+       "value", `String value;
+       "reason", `String reason;
+       "typed_cell_metadata_present", `Bool typed_metadata_present;
+       "typed_cell_metadata_consistent", `Bool typed_metadata_consistent;
+       "source_row_producer_evidence", source_producer;
+       "source_transfer_event", member "transfer_event" cell_json;
+       "semantic_expression", member "semantic_expression" cell_json;
+       "semantic_guard", member "semantic_guard" cell_json;
+       "residual_dependencies", member "residual_dependencies" cell_json;
+     ]
+    @ dynamic_fields)
+
 let itv_mem_coverage_report ~module_id stage2_output =
   let equation_ids = itv_mem_equation_ids stage2_output.StageT.execution_log in
   let cells =
@@ -1475,6 +1564,11 @@ let itv_mem_coverage_report ~module_id stage2_output =
            | Some id -> [ "residual_equation_id", `String id ]
            | None -> []
          in
+         let producer_evidence =
+           itv_mem_cell_producer_evidence ~module_id ~local_table ~table ~node
+             ~location ~value ~classification ~reason ~typed_metadata_present
+             ~typed_metadata_consistent ~equation_id cell_json
+         in
          `Assoc
            ([
               "cell_id", `String final_identity;
@@ -1491,6 +1585,13 @@ let itv_mem_coverage_report ~module_id stage2_output =
               "typed_cell_metadata_consistent",
               `Bool typed_metadata_consistent;
               "typed_cell_metadata", typed_metadata;
+              "producer_evidence_present",
+              `Bool (itv_mem_supported_classification classification);
+              "producer_evidence_consistent",
+              `Bool
+                (itv_mem_supported_classification classification
+                && typed_metadata_present && typed_metadata_consistent);
+              "producer_evidence", producer_evidence;
             ]
            @ dynamic_fields))
     |> sort_json

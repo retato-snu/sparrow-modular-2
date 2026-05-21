@@ -436,8 +436,27 @@ let itv_mem_typed_metadata_valid cell =
       && member "cell_id_json" metadata = member "cell_id_json" expected
       && member "canonical_value" metadata = member "canonical_value" expected
       && bool_field "typed_cell_metadata_present" cell
-      && bool_field "typed_cell_metadata_consistent" cell
+	      && bool_field "typed_cell_metadata_consistent" cell
+	  | _ -> false
+
+let itv_mem_producer_evidence_valid cell =
+  let classification = string_field "classification" cell in
+  match member "producer_evidence" cell with
+  | `Assoc _ as evidence ->
+      string_field "schema_version" evidence
+      = "abstract-speculate-itv-producer-evidence/v1"
+      && string_field "claim_boundary" evidence
+         = "sparrow-itv-fixture-evidence-only"
+      && string_field "classification" evidence = classification
+      && string_field "table" evidence = string_field "table" cell
+      && string_field "node" evidence = string_field "node" cell
+      && string_field "location" evidence = string_field "location" cell
+      && string_field "value" evidence = string_field "value" cell
+      && bool_field "producer_evidence_present" cell
+      && bool_field "producer_evidence_consistent" cell
+      && bool_field "accepted_for_full_itv_coverage" evidence
   | _ -> false
+
 let itv_mem_coverage_valid evidence =
   match member "itv_mem_coverage" evidence with
   | `Assoc _ as coverage ->
@@ -447,12 +466,13 @@ let itv_mem_coverage_valid evidence =
       && list_field "itv_mem_final_cell_set_mismatches" coverage = []
       && list_field "itv_mem_cells" coverage <> []
       && List.for_all
-           (fun cell ->
-             let classification = string_field "classification" cell in
-             classification <> "metadata-only-projection"
-             && classification <> "unsupported"
-             && itv_mem_typed_metadata_valid cell)
-           (list_field "itv_mem_cells" coverage)
+	           (fun cell ->
+	             let classification = string_field "classification" cell in
+	             classification <> "metadata-only-projection"
+	             && classification <> "unsupported"
+	             && itv_mem_typed_metadata_valid cell
+	             && itv_mem_producer_evidence_valid cell)
+	           (list_field "itv_mem_cells" coverage)
   | _ -> false
 
 let source_rerun_valid evidence =

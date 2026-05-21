@@ -127,3 +127,4 @@ $RECYCLE.BIN/
 .codex/skills/.system/**
 !.codex/prompts/
 !.codex/prompts/**
+.antigravitycli

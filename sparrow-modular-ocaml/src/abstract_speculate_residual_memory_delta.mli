@@ -58,9 +58,13 @@ type delta = private {
 
 val external_summary_schema_id : string
 val memory_delta_schema_id : string
+val summary_language_schema_id : string
 val bounded_taint_component_schema_id : string
 val summary_api_status : string
 val witness_scope : string
+val summary_scope : string
+val summary_claim_boundary : string
+val summary_language_json : unit -> Yojson.Safe.t
 
 val domain_to_string : memory_domain -> string
 val domain_of_string : string -> (memory_domain, string) result

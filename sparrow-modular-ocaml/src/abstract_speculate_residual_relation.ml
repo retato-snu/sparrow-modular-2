@@ -189,6 +189,25 @@ let itv_mem_typed_metadata_valid cell =
       && bool_field "typed_cell_metadata_present" cell
       && bool_field "typed_cell_metadata_consistent" cell
   | _ -> false
+
+let itv_mem_producer_evidence_valid cell =
+  let classification = string_field "classification" cell in
+  match member "producer_evidence" cell with
+  | `Assoc _ as evidence ->
+      string_field "schema_version" evidence
+      = "abstract-speculate-itv-producer-evidence/v1"
+      && string_field "claim_boundary" evidence
+         = "sparrow-itv-fixture-evidence-only"
+      && string_field "classification" evidence = classification
+      && string_field "table" evidence = string_field "table" cell
+      && string_field "node" evidence = string_field "node" cell
+      && string_field "location" evidence = string_field "location" cell
+      && string_field "value" evidence = string_field "value" cell
+      && bool_field "producer_evidence_present" cell
+      && bool_field "producer_evidence_consistent" cell
+      && bool_field "accepted_for_full_itv_coverage" evidence
+  | _ -> false
+
 let source_rerun_itv_mem_coverage_valid evidence =
   match member "itv_mem_coverage" evidence with
   | `Assoc _ as coverage ->
@@ -202,7 +221,8 @@ let source_rerun_itv_mem_coverage_valid evidence =
              let classification = string_field "classification" cell in
              classification <> "metadata-only-projection"
              && classification <> "unsupported"
-             && itv_mem_typed_metadata_valid cell)
+             && itv_mem_typed_metadata_valid cell
+             && itv_mem_producer_evidence_valid cell)
            (list_field "itv_mem_cells" coverage)
   | _ -> false
 
@@ -1965,6 +1985,25 @@ let full_itv_semantic_relation_json ~witness_id ~residual ~oracle =
     `Assoc
       [
         ("witness_id", `String witness_id);
+        ( "coverage_gate_schema",
+          `String "abstract-speculate-full-itv-semantic-universe-manifest/v2"
+        );
+        ( "claim_boundary",
+          `String
+            "witness-bounded-sparrow-itv-fixture-evidence-only-no-arbitrary-c"
+        );
+        ( "required_semantic_path_evidence",
+          `List
+            [
+              `String "final_cell_coverage";
+              `String "typed_metadata_consistency";
+              `String "source_rerun_evidence";
+              `String "selected_observation_masking_negative";
+            ] );
+        ( "selected_observation_policy",
+          `String
+            "selected-observation diagnostics are non-authoritative and cannot \
+             mask missing/full ITV final-cell coverage failures" );
         ( "expected_fact_source",
           `String
             "origin/premerge final input/output tables plus global residual \

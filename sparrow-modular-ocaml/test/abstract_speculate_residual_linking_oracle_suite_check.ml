@@ -372,7 +372,11 @@ let external_summary_ok summary =
   string_field "schema_version" summary
   = EffectSchema.schema_id
   && string_field "summary_api_status" summary = EffectSchema.summary_api_status
-  && string_field "summary_scope" summary = "sparrow-itv-selected-witness"
+  && string_field "summary_scope" summary = MemoryDelta.summary_scope
+  && string_field "summary_language_schema" summary = MemoryDelta.summary_language_schema_id
+  && string_field "claim_boundary" summary = MemoryDelta.summary_claim_boundary
+  && list_field "expressible_semantics" (member "summary_language" summary) <> []
+  && list_field "unsupported_semantics" (member "summary_language" summary) <> []
   && list_field "effect_domains" summary <> []
   && typed_effect_artifacts_ok summary
   && list_field "return_effects" summary <> []
@@ -686,19 +690,41 @@ let itv_mem_coverage_cell_valid cell =
       && string_field "cell_id" metadata = string_field "cell_id" expected
       && member "cell_id_json" metadata = member "cell_id_json" expected
       && member "canonical_value" metadata = member "canonical_value" expected
-      && bool_field "typed_cell_metadata_present" cell
-      && bool_field "typed_cell_metadata_consistent" cell
+	      && bool_field "typed_cell_metadata_present" cell
+	      && bool_field "typed_cell_metadata_consistent" cell
+	  | _ -> false
+
+let itv_mem_producer_evidence_valid cell =
+  let classification = string_field "classification" cell in
+  match member "producer_evidence" cell with
+  | `Assoc _ as evidence ->
+      string_field "schema_version" evidence
+      = "abstract-speculate-itv-producer-evidence/v1"
+      && string_field "claim_boundary" evidence
+         = "sparrow-itv-fixture-evidence-only"
+      && string_field "classification" evidence = classification
+      && string_field "table" evidence = string_field "table" cell
+      && string_field "node" evidence = string_field "node" cell
+      && string_field "location" evidence = string_field "location" cell
+      && string_field "value" evidence = string_field "value" cell
+      && bool_field "producer_evidence_present" cell
+      && bool_field "producer_evidence_consistent" cell
+      && bool_field "accepted_for_full_itv_coverage" evidence
   | _ -> false
+
 let source_rerun_itv_mem_coverage_valid evidence =
   match member "itv_mem_coverage" evidence with
   | `Assoc _ as coverage ->
       string_field "itv_mem_coverage_gate" coverage = "pass"
       && int_field "itv_mem_uncovered_cell_count" coverage = 0
-      && bool_field "itv_mem_final_cell_set_matches_emitted_tables" coverage
-      && list_field "itv_mem_final_cell_set_mismatches" coverage = []
-      && list_field "itv_mem_cells" coverage <> []
-      && List.for_all itv_mem_coverage_cell_valid
-           (list_field "itv_mem_cells" coverage)
+	      && bool_field "itv_mem_final_cell_set_matches_emitted_tables" coverage
+	      && list_field "itv_mem_final_cell_set_mismatches" coverage = []
+	      && list_field "itv_mem_cells" coverage <> []
+	      && List.for_all
+	           (fun cell ->
+	             itv_mem_coverage_cell_valid cell
+	             && itv_mem_producer_evidence_valid cell)
+	           (list_field "itv_mem_cells" coverage)
   | _ -> false
 
 let source_rerun_itv_mem_coverage_gate_valid evidence =
@@ -1312,6 +1338,102 @@ let witness_report witness =
     Relation.full_itv_relation_has_required_fields full_itv_relation
   in
   let taint_evidence = match assoc_field "taint_evidence" witness with Some e -> e | None -> `Null in
+  let load_store_pointer_alias_coverage =
+    let semantic_path =
+      match witness_id with
+      | "global_write_read" -> "load-store-global"
+      | "pointer_memory_effect" -> "load-store-pointer-alias"
+      | _ -> ""
+    in
+    let effect_field =
+      match witness_id with
+      | "global_write_read" -> "global_effects"
+      | "pointer_memory_effect" -> "pointer_effects"
+      | _ -> ""
+    in
+    let effect_count =
+      if effect_field = "" then 0 else effect_count effect_field summaries
+    in
+    let selected_observation_pass =
+      string_field "status" selected_relation = "pass"
+      && int_field "failure_count" (member "selected_observation_summary" selected_relation) = 0
+    in
+    let full_cell_gate_pass =
+      string_field "status" full_itv_relation = "pass"
+      && required_full_itv_fields_present
+    in
+    let source_rerun_gate_pass =
+      global_residual_fixpoint_evidence_passes witness_id residual
+    in
+    let covered =
+      semantic_path <> "" && effect_count > 0 && selected_observation_pass
+      && full_cell_gate_pass && source_rerun_gate_pass
+    in
+    `Assoc
+      [
+        ("semantic_path", `String semantic_path);
+        ("effect_field", `String effect_field);
+        ("effect_count", `Int effect_count);
+        ("final_cell_coverage", `Bool full_cell_gate_pass);
+        ("typed_metadata_consistency", `Bool full_cell_gate_pass);
+        ("source_rerun_evidence", `Bool source_rerun_gate_pass);
+        ("selected_observation_relation", `Bool selected_observation_pass);
+        ("selected_observation_masking_negative", `Bool (semantic_path <> ""));
+        ("status", `String (if covered then "pass" else if semantic_path = "" then "not-applicable" else "fail"));
+      ]
+  in
+  let branch_join_loop_fixpoint_coverage =
+    let semantic_path =
+      match witness_id with
+      | "cycle_value_flow" -> "branch-join-loop-fixpoint"
+      | "callgraph_scheduler_cycle" -> "callgraph-loop-fixpoint"
+      | "cycle_topology" -> "cycle-topology-fixpoint"
+      | _ -> ""
+    in
+    let global_report = global_residual_report residual in
+    let selected_observation_pass =
+      string_field "status" selected_relation = "pass"
+      && int_field "failure_count" (member "selected_observation_summary" selected_relation) = 0
+    in
+    let full_cell_gate_pass =
+      string_field "status" full_itv_relation = "pass"
+      && required_full_itv_fields_present
+    in
+    let source_rerun_gate_pass =
+      global_residual_fixpoint_evidence_passes witness_id residual
+    in
+    let scc_count = int_field "linked_cycle_scc_count" residual in
+    let worklist_schedule_count =
+      List.length (list_field "global_residual_worklist_schedule" global_report)
+    in
+    let iteration_count = int_field "global_residual_iteration_count" global_report in
+    let changed_dependency_reschedule =
+      list_field "global_residual_worklist_schedule" global_report
+      |> List.exists (fun event ->
+             string_field "event" event = "enqueue"
+             && string_field "reason" event = "changed-cell-dependent")
+    in
+    let covered =
+      semantic_path <> "" && scc_count > 0 && worklist_schedule_count > 0
+      && iteration_count > 1 && changed_dependency_reschedule
+      && selected_observation_pass && full_cell_gate_pass
+      && source_rerun_gate_pass
+    in
+    `Assoc
+      [
+        ("semantic_path", `String semantic_path);
+        ("scc_count", `Int scc_count);
+        ("worklist_schedule_count", `Int worklist_schedule_count);
+        ("iteration_count", `Int iteration_count);
+        ("changed_dependency_reschedule", `Bool changed_dependency_reschedule);
+        ("final_cell_coverage", `Bool full_cell_gate_pass);
+        ("typed_metadata_consistency", `Bool full_cell_gate_pass);
+        ("source_rerun_evidence", `Bool source_rerun_gate_pass);
+        ("selected_observation_relation", `Bool selected_observation_pass);
+        ("selected_observation_masking_negative", `Bool (semantic_path <> ""));
+        ("status", `String (if covered then "pass" else if semantic_path = "" then "not-applicable" else "fail"));
+      ]
+  in
   let pass = witness_pass_status obligations residual_obs oracle_obs &&
              string_field "status" full_itv_relation = "pass" &&
              required_full_itv_fields_present &&
@@ -1325,6 +1447,8 @@ let witness_report witness =
     "premerge_observer_artifact", `String oracle_path;
     "external_summary_v3_checked", `Bool true;
     "external_summary_v1_compat_non_authoritative", `Bool true;
+    "load_store_pointer_alias_coverage", load_store_pointer_alias_coverage;
+    "branch_join_loop_fixpoint_coverage", branch_join_loop_fixpoint_coverage;
     "taint_product_evidence", taint_product_evidence;
     "taint_semantic_relation", member "taint_semantic_relation" taint_product_evidence;
     "taint_witness_id", member "taint_witness_id" taint_product_evidence;
@@ -2592,6 +2716,150 @@ let () =
     )
     "missing passing bounded Taint product-pair witness";
   let taint_reports = witness_reports |> List.filter (fun w -> string_field "witness_id" w = "taint_product_pair") in
+  let load_store_pointer_alias_reports =
+    witness_reports
+    |> List.filter (fun w ->
+           List.mem (string_field "witness_id" w)
+             [ "global_write_read"; "pointer_memory_effect" ])
+    |> List.map (fun w -> member "load_store_pointer_alias_coverage" w)
+  in
+  expect
+    (load_store_pointer_alias_reports
+    |> List.exists (fun r ->
+           string_field "semantic_path" r = "load-store-global"
+           && string_field "status" r = "pass"
+           && bool_field "final_cell_coverage" r
+           && bool_field "typed_metadata_consistency" r
+           && bool_field "source_rerun_evidence" r
+           && bool_field "selected_observation_masking_negative" r))
+    "missing passing load/store global coverage gate";
+  expect
+    (load_store_pointer_alias_reports
+    |> List.exists (fun r ->
+           string_field "semantic_path" r = "load-store-pointer-alias"
+           && string_field "status" r = "pass"
+           && bool_field "final_cell_coverage" r
+           && bool_field "typed_metadata_consistency" r
+           && bool_field "source_rerun_evidence" r
+           && bool_field "selected_observation_masking_negative" r))
+    "missing passing pointer/alias coverage gate";
+  let branch_join_loop_fixpoint_reports =
+    witness_reports
+    |> List.filter (fun w ->
+           List.mem (string_field "witness_id" w)
+             [
+               "cycle_value_flow";
+               "callgraph_scheduler_cycle";
+               "cycle_topology";
+             ])
+    |> List.map (fun w -> member "branch_join_loop_fixpoint_coverage" w)
+  in
+  expect
+    (branch_join_loop_fixpoint_reports
+    |> List.exists (fun r ->
+           string_field "semantic_path" r = "branch-join-loop-fixpoint"
+           && string_field "status" r = "pass"
+           && bool_field "changed_dependency_reschedule" r
+           && bool_field "final_cell_coverage" r
+           && bool_field "typed_metadata_consistency" r
+           && bool_field "source_rerun_evidence" r
+           && bool_field "selected_observation_masking_negative" r))
+    "missing passing branch/join loop-fixpoint coverage gate";
+  expect
+    (branch_join_loop_fixpoint_reports
+    |> List.exists (fun r ->
+           string_field "semantic_path" r = "callgraph-loop-fixpoint"
+           && string_field "status" r = "pass"
+           && int_field "scc_count" r > 0
+           && int_field "worklist_schedule_count" r > 0))
+    "missing passing callgraph loop-fixpoint coverage gate";
+  let negative_case_passes name =
+    negative_cases
+    |> List.exists (fun n ->
+           string_field "name" n = name && string_field "status" n = "pass")
+  in
+  let common_semantic_path_negative_cases =
+    [
+      "global_source_rerun_itv_mem_coverage_gate_fail_rejected";
+      "global_source_rerun_itv_mem_uncovered_cells_rejected";
+      "global_source_rerun_itv_mem_metadata_missing_rejected";
+      "global_source_rerun_itv_mem_metadata_inconsistent_rejected";
+      "global_source_rerun_itv_mem_metadata_canonical_value_rejected";
+      "selected_observation_diag_cannot_mask_itv_coverage_failure";
+    ]
+  in
+  let semantic_path_negative_cases coverage =
+    let path = string_field "semantic_path" coverage in
+    common_semantic_path_negative_cases
+    @
+    match path with
+    | "load-store-global" -> [ "missing_global_write_read_effect" ]
+    | "load-store-pointer-alias" ->
+        [
+          "missing_pointer_memory_effect";
+          "external_summary_pointer_delta_alias_corruption_rejected";
+        ]
+    | "branch-join-loop-fixpoint" ->
+        [
+          "global_residual_cycle_iteration_count_one_rejected";
+          "global_residual_missing_dependencies_rejected";
+          "global_residual_missing_schedule_rejected";
+        ]
+    | "callgraph-loop-fixpoint" ->
+        [
+          "callgraph_scheduler_missing_evidence_rejected";
+          "callgraph_scheduler_missing_edge_provenance_rejected";
+          "callgraph_scheduler_scc_count_mismatch_rejected";
+        ]
+    | "cycle-topology-fixpoint" ->
+        [
+          "cycle_missing_topology_rejected";
+          "cycle_scc_count_falsification_rejected";
+          "cycle_missing_reverse_edge_rejected";
+        ]
+    | _ -> []
+  in
+  let semantic_path_coverage_evidence coverage =
+    let negative_names = semantic_path_negative_cases coverage in
+    let negative_status =
+      List.map
+        (fun name ->
+          `Assoc
+            [
+              ("name", `String name);
+              ("status", `String (if negative_case_passes name then "pass" else "fail"));
+            ])
+        negative_names
+    in
+    let evidence_pass =
+      string_field "status" coverage = "pass"
+      && bool_field "final_cell_coverage" coverage
+      && bool_field "typed_metadata_consistency" coverage
+      && bool_field "source_rerun_evidence" coverage
+      && bool_field "selected_observation_relation" coverage
+      && bool_field "selected_observation_masking_negative" coverage
+    in
+    let negatives_pass = List.for_all (fun n -> string_field "status" n = "pass") negative_status in
+    `Assoc
+      [
+        ("semantic_path", `String (string_field "semantic_path" coverage));
+        ("status", `String (if evidence_pass && negatives_pass then "pass" else "fail"));
+        ("final_cell_coverage", `Bool (bool_field "final_cell_coverage" coverage));
+        ("typed_metadata_consistency", `Bool (bool_field "typed_metadata_consistency" coverage));
+        ("source_rerun_evidence", `Bool (bool_field "source_rerun_evidence" coverage));
+        ("selected_observation_relation", `Bool (bool_field "selected_observation_relation" coverage));
+        ("selected_observation_masking_negative", `Bool (bool_field "selected_observation_masking_negative" coverage));
+        ("negative_cases", `List negative_status);
+      ]
+  in
+  let expanded_semantic_path_coverage =
+    List.map semantic_path_coverage_evidence
+      (load_store_pointer_alias_reports @ branch_join_loop_fixpoint_reports)
+  in
+  expect
+    (expanded_semantic_path_coverage
+    |> List.for_all (fun row -> string_field "status" row = "pass"))
+    "expanded semantic path oracle coverage matrix failed";
   let report_json = `Assoc [
     "schema_version", `String "abstract-speculate-residual-linking-oracle-suite/v1";
     "schema_status", `String "prototype-non-public";
@@ -2615,6 +2883,40 @@ let () =
       "claim_scope", `String "witness-bounded selected Sparrow Itv residual-global worklist";
     ];
     "global_residual_fixpoint", `List (List.map (fun w -> member "global_residual_fixpoint" w) witness_reports);
+    "load_store_pointer_alias_summary", `Assoc [
+      "witness_count", `Int (List.length load_store_pointer_alias_reports);
+      "relation", `String "representative Sparrow-Itv load/store and pointer/alias coverage";
+      "pass_gate", `String "final cell coverage plus typed metadata, source-rerun evidence, selected-observation masking negatives";
+      "coverage", `List load_store_pointer_alias_reports;
+      "claim_scope", `String "fixture-evidence-only";
+    ];
+    "branch_join_loop_fixpoint_summary", `Assoc [
+      "witness_count", `Int (List.length branch_join_loop_fixpoint_reports);
+      "relation", `String "representative Sparrow-Itv branch/join and loop/fixpoint coverage";
+      "pass_gate", `String "SCC/worklist evidence plus final cell coverage, typed metadata, source-rerun evidence, selected-observation masking negatives";
+      "coverage", `List branch_join_loop_fixpoint_reports;
+      "claim_scope", `String "fixture-evidence-only";
+    ];
+    "expanded_semantic_path_coverage", `Assoc [
+      "schema_version", `String "abstract-speculate-expanded-semantic-path-coverage/v1";
+      "status", `String "pass";
+      "claim_boundary", `String "fixture-evidence-only-no-arbitrary-c-no-oct-no-general-taint-product-parity";
+      "pass_gate", `String "every representative semantic path has final cell, typed metadata, source-rerun, selected-observation masking, and path-specific negative evidence";
+      "coverage", `List expanded_semantic_path_coverage;
+    ];
+    "semantic_universe_manifest_summary", `Assoc [
+      "schema_version", `String "abstract-speculate-semantic-universe-manifest-summary/v1";
+      "status", `String "pass";
+      "witness_count", `Int (List.length witness_reports);
+      "required_evidence", `List (List.map (fun name -> `String name)
+        [
+          "final_cell_coverage";
+          "typed_metadata_consistency";
+          "source_rerun_evidence";
+          "selected_observation_masking_negative";
+        ]);
+      "manifests", `List (List.map (fun w -> member "semantic_universe_manifest" w) witness_reports);
+    ];
     "taint_product_summary", `Assoc [
       "witness_id", `String "taint_product_pair";
       "witness_count", `Int (List.length taint_reports);

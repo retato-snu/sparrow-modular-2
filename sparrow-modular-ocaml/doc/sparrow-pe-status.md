@@ -56,9 +56,10 @@ Sparrow product analyzer.  The only Taint claim is the named bounded
 | Checked cyclic residual scheduling | Implemented only for bounded function-import SCC witnesses with explicit scheduler provenance | `src/abstract_speculate_residual_linker.ml`, `@abstract_speculate_residual_linking_oracle_suite`; reports may call scheduling callgraph-backed only when every scheduler edge carries direct callgraph or residual call-binding provenance. |
 | Residual-linking oracle suite | Implemented as prototype full Sparrow-Itv evidence | `@abstract_speculate_residual_linking_oracle_suite`. |
 | Post-link residual-global fixpoint | Implemented for bounded residual-linking witnesses | `src/abstract_speculate_global_residual_fixpoint.ml` runs a post-link whole-program residual-cell worklist; `src/abstract_speculate_residual_linker.ml` emits `global_residual_*` evidence; `@abstract_speculate_residual_linking_oracle_suite` gates positive, cycle, equivalence, and negative cases. |
-| Selected Sparrow-Itv final-cell coverage gate | Implemented only for selected residual-linking fixtures, including `abstract_speculate_residual_linking_pe/importer.c + provider.c` and the oracle-suite witnesses | Linked JSON reports `itv_mem_*` coverage counters, strict per-cell classifications, `typed_cell_metadata` consistency booleans, and `full_itv_relation_contract`; the global/relation gate requires source-rerun coverage to exist, `itv_mem_coverage_gate=pass`, `itv_mem_uncovered_cell_count=0`, final-cell-set agreement, and valid typed metadata so selected/witness diagnostics cannot pass alone. |
+| Selected Sparrow-Itv final-cell coverage gate | Implemented for the selected residual-linking PE fixture, the oracle-suite load/store, pointer/alias, branch/join, loop/fixpoint witnesses, and Slice 1 API/model fixtures | Linked JSON reports `itv_mem_*` coverage counters, strict per-cell classifications, producer evidence, `typed_cell_metadata` consistency booleans, and `full_itv_relation_contract`; the global/relation gate requires source-rerun coverage to exist, `itv_mem_coverage_gate=pass`, `itv_mem_uncovered_cell_count=0`, final-cell-set agreement, valid typed metadata, and selected-observation masking negatives so diagnostics cannot pass alone. |
 | Bounded Taint-first product witness | Implemented only for the named `taint_product_pair` oracle-suite witness | ExternalSummary v3 reports `taint_components` and `product_pair_evidence` for one Itv+Taint product-pair; this is not general Taint/product-domain parity. |
-| Residual API model coverage Slice 1 | Implemented only for `memcpy`, `strcpy`, and `strlen` ItvDom.Mem-adjacent witnesses | `@abstract_speculate_residual_api_model_coverage` emits `abstract-speculate-residual-api-model-coverage/v1` with `residual-api-model-coverage/slice-1` provenance, upstream dependency/state-read/seed-read checks, and negative mutations. |
+| Residual summary language | Implemented as a prototype Sparrow-Itv fixture language, not a public API | ExternalSummary reports `abstract-speculate-sparrow-itv-summary-language/v1`, summary scope, claim boundary, return/memory/pointer/branch-loop/API expressible semantics, and unsupported-semantic non-claims; validators reject missing language, corrupted claim boundary, and malformed memory-effect operations. |
+| Residual API model coverage Slice 1 | Implemented only for `memcpy`, `strcpy`, and `strlen` ItvDom.Mem-adjacent witnesses | `@abstract_speculate_residual_api_model_coverage` emits `abstract-speculate-residual-api-model-coverage/v1` plus `api_model_summary` and an API semantic-universe manifest for `api-model-memcpy`, `api-model-strcpy`, and `api-model-strlen`; each path gates final-cell, typed metadata, source-rerun, selected-observation masking, and unsupported-API negative evidence. |
 
 ## Not implemented / not claimed
 
@@ -68,8 +69,8 @@ Sparrow product analyzer.  The only Taint claim is the named bounded
 | Full product-domain staging | The accepted staged semantics remain generally Itv-focused; only a bounded named Taint product-pair witness is staged. | Product-domain fidelity is required before broad Sparrow claims. |
 | Oct/OctImpact and general Taint semantic preservation | Oct/OctImpact remain unsupported; Taint support is limited to `taint_product_pair` bounded evidence and is not general Taint parity. | Product-domain claims require separate evidence and tests. |
 | Arbitrary-C semantic preservation | Fixtures and oracle-suite witnesses bound the evidence. | Current results are not a theorem for all C modules. |
-| General ItvDom.Mem solver / arbitrary fixture coverage | Selected residual-linking fixtures have hard final-cell coverage gates; a general ItvDom.Mem solver for every Sparrow fixture or arbitrary C program is not implemented. | Broader fixtures still need the same residual identity/classification audit, source-rerun coverage, and negative coverage gates before claiming parity. |
-| General residual summary language | ExternalSummary v3 is prototype/internal and typed for selected return effects plus selected memory-delta chains (`abstract-speculate-external-summary/v3`, `abstract-speculate-external-summary-memory-delta/v3`), but remains witness-bounded. | Broader linking still needs a general effect algebra beyond selected Sparrow-Itv witnesses. |
+| General ItvDom.Mem solver / arbitrary fixture coverage | The expanded fixture set now covers selected load/store, pointer/alias, branch/join, loop/fixpoint, and Slice 1 API/model paths with hard final-cell gates; a general ItvDom.Mem solver for every Sparrow fixture or arbitrary C program is not implemented. | Broader fixtures still need the same residual identity/classification audit, source-rerun coverage, semantic-universe manifest, and negative coverage gates before claiming parity. |
+| General residual summary language | The current summary language is explicit enough for the expanded Sparrow-Itv fixture set, but it remains prototype/internal and fixture-evidence-only. | Broader linking still needs a general effect algebra beyond selected Sparrow-Itv witnesses and the planned `abstract-speculate-effect-algebra/v1` authority migration. |
 | General API/model coverage | Only `memcpy`, `strcpy`, and `strlen` have residual API model coverage rows. | Broader `ApiSem`, allocation/input APIs, arbitrary aliasing, and general ItvDom.Mem semantics still need separate evidence beyond Slice 1. |
 | General cyclic residual linking | Only checked function-import SCC witnesses are supported, and callgraph-backed scheduling is a provenance-gated report claim. Arbitrary recursive call/memory cycles, dependency-only schedules labeled as callgraph-backed, and cyclic effects outside the selected witnesses remain unsupported. | Broader cyclic linking still needs a general call/effect semantics plus oracle evidence beyond the current Sparrow-Itv witness slice. |
 | Full source-level whole-program sparse rerun | Implemented for bounded residual-linking witnesses through a post-link source rerun/provenance adapter plus linked-context global residual evidence. | The claim is witness-bounded and evidence-gated; it is not an arbitrary-C theorem, performance claim, mechanized proof, or stable public schema. |
@@ -184,17 +185,27 @@ Covered positive witness categories:
 - global write/read;
 - pointer memory effect;
 - multiple providers/imports;
-- mixed-role scheduling and summary handoff.
+- mixed-role scheduling and summary handoff;
+- cycle topology, callgraph-backed loop scheduling, and branch/join loop value
+  flow through the oracle suite; and
+- Slice 1 API/model paths `api-model-memcpy`, `api-model-strcpy`, and
+  `api-model-strlen` through the focused API coverage report.
 
 Covered negative cases include mismatched returns/effects, missing global or
 pointer observations, non-selected Itv cell removal that fails the full relation
-while selected diagnostics still pass, ambiguous provider acceptance, invalid
-mixed-role phase ordering, forbidden premerge shortcut leakage, missing oracle
-artifacts, witness identity mismatch, missing provenance, and mixed-role
-dependency cycles.  The suite also rejects ExternalSummary v1-only/compat-only
-artifacts, missing v3 summaries, schema/status downgrades, missing typed
-return effects, missing authoritative memory deltas/chains, and corrupted
-selected return/global/pointer effect value, location, chain, or provenance.
+while selected diagnostics still pass, selected-observation masking of missing
+full-Itv/source-rerun coverage, missing/corrupted typed metadata, producer-only
+or metadata-only coverage, ambiguous provider acceptance, invalid mixed-role
+phase ordering, forbidden premerge shortcut leakage, missing oracle artifacts,
+witness identity mismatch, missing provenance, cycle/scheduler/topology
+corruption, and mixed-role dependency cycles.  The suite also rejects
+ExternalSummary v1-only/compat-only artifacts, missing v3 summaries,
+schema/status downgrades, missing typed return effects, missing authoritative
+memory deltas/chains, and corrupted selected return/global/pointer effect
+value, location, chain, or provenance.  The API coverage gate separately
+rejects missing state/seed reads, empty or target/self-only dependencies,
+metadata-only API rows, unsupported optional API coverage, corrupted API
+provenance, and baseline-source corruption.
 
 ## Verification commands
 

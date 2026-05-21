@@ -14,10 +14,10 @@ working directory.
 | Active build, typecheck, and test suite | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @runtest` | Dune completes successfully; this covers the aggregated active aliases in `test/dune`. |
 | Focused MetaOCaml sparse PE gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_metaocaml_sparse_pe` | Sparse PE source-lineage, module-boundary, provenance, BTA, residual, forbidden-shortcut, and audit reports are regenerated. |
 | Focused residual-linking prototype gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_residual_linking_pe` | The residual-linking prototype report is regenerated. |
-| Focused residual API model coverage gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_residual_api_model_coverage` | The Slice 1 API coverage report is regenerated with schema `abstract-speculate-residual-api-model-coverage/v1`, covering exactly `memcpy`, `strcpy`, and `strlen` with upstream dependency, state-read, seed-read, and negative mutation checks. |
+| Focused residual API model coverage gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_residual_api_model_coverage` | The Slice 1 API coverage report is regenerated with schema `abstract-speculate-residual-api-model-coverage/v1`, covering exactly `memcpy`, `strcpy`, and `strlen` with upstream dependency, state-read, seed-read, `api_model_summary`, semantic-universe manifest, and negative mutation checks. |
 | Typed scalar-call protocol unit gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune exec test/abstract_speculate_residual_scalar_call_unit.bc` | Unit checks validate typed scalar constructors, full-Itv scalar normalization, legacy v1 compatibility payloads, ExternalSummary v3 derivation compatibility, and mismatch rejection. |
 | ExternalSummary v3 memory-delta unit gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune exec test/abstract_speculate_residual_memory_delta_unit.bc` | Unit checks validate `abstract-speculate-external-summary/v3`, `abstract-speculate-external-summary-memory-delta/v3`, selected global/pointer memory deltas, chain validation, and negative corruption cases. |
-| Focused residual-linking oracle-suite gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_residual_linking_oracle_suite` | The oracle-suite report is regenerated, including positive and negative witnesses plus the post-link `global_residual_*` fixpoint/equivalence gate. |
+| Focused residual-linking oracle-suite gate | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @abstract_speculate_residual_linking_oracle_suite` | The oracle-suite report is regenerated, including positive and negative witnesses, semantic-universe manifest v2 fields, expanded semantic-path coverage, and the post-link `global_residual_*` fixpoint/equivalence gate. |
 | Documentation build | `cd sparrow-modular-ocaml && opam exec --switch MetaOCaml-full -- dune build @doc` | Package documentation builds successfully when documentation tooling is installed. |
 | Frozen baseline regression | `cd sparrow && opam exec --switch sparrow -- dune runtest --force` | The frozen baseline/oracle passes under its own switch. |
 | Frozen baseline no-edit audit | `git diff --exit-code -- sparrow` | No active change modified the frozen baseline tree. |
@@ -127,7 +127,9 @@ Use this focused checklist when validating residual API model coverage for
 5. Confirm the generated report records
    `schema_version=abstract-speculate-residual-api-model-coverage/v1`,
    `scope=exactly memcpy,strcpy,strlen core memory/string copy/length residual
-   semantics`, and an empty `unsupported_api_residual_coverage` list.
+   semantics`, an empty `unsupported_api_residual_coverage` list,
+   `api_model_summary.status=pass`, and
+   `semantic_universe_manifest.status=pass`.
 6. Reconfirm unsupported APIs remain non-claims: `memmove`, `strncpy`, `strcat`,
    `strdup` / `xstrdup`, input-buffer APIs, `fgets`, `scanf`, generic
    allocation APIs, broad `ApiSem` entries, disabled `memset`, arbitrary-C API
@@ -162,8 +164,30 @@ for `abstract_speculate_residual_linking_pe/importer.c + provider.c` only:
    evidence, typed metadata/value mutations, and added uncovered final-table
    cells even when selected-observation diagnostics still look plausible.
 5. Reconfirm non-goals: this is not an arbitrary-C theorem, not Oct/OctImpact
-   support, not general Taint/product-domain parity, not general API/model
-   coverage, and not a broad effect algebra for all Sparrow cells.
+   support, not general Taint/product-domain parity, not API/model coverage
+   beyond `memcpy`, `strcpy`, and `strlen`, and not a broad effect algebra for
+   all Sparrow cells.
+
+## Expanded Sparrow-Itv residual-linking fixture checklist
+
+Use this focused checklist for the broadened residual-linking fixture set:
+
+1. Run `@abstract_speculate_residual_linking_oracle_suite` and confirm
+   `suite_status=pass`.
+2. Confirm `expanded_semantic_path_coverage.status=pass` and that it contains
+   `load-store-global`, `load-store-pointer-alias`,
+   `cycle-topology-fixpoint`, `callgraph-loop-fixpoint`, and
+   `branch-join-loop-fixpoint`.
+3. For every path, confirm `final_cell_coverage`,
+   `typed_metadata_consistency`, `source_rerun_evidence`,
+   `selected_observation_relation`, and
+   `selected_observation_masking_negative` are true.
+4. Confirm each path lists passing common source-rerun/typed-metadata/selected
+   masking negatives plus path-specific negatives for global memory, pointer
+   alias, cycle topology, callgraph scheduling, or branch/join loop evidence.
+5. Confirm every witness semantic-universe manifest records
+   `coverage_gate_schema=abstract-speculate-full-itv-semantic-universe-manifest/v2`
+   and the selected-observation non-authoritative policy.
 
 ## Typed residual scalar-call protocol checklist
 

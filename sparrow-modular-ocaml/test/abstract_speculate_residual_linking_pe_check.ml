@@ -232,7 +232,11 @@ let external_summary_ok summary =
   in
   string_field "schema_version" summary = EffectSchema.schema_id &&
   string_field "summary_api_status" summary = EffectSchema.summary_api_status &&
-  string_field "summary_scope" summary = "sparrow-itv-selected-witness" &&
+  string_field "summary_scope" summary = MemoryDelta.summary_scope &&
+  string_field "summary_language_schema" summary = MemoryDelta.summary_language_schema_id &&
+  string_field "claim_boundary" summary = MemoryDelta.summary_claim_boundary &&
+  list_field "expressible_semantics" (member "summary_language" summary) <> [] &&
+  list_field "unsupported_semantics" (member "summary_language" summary) <> [] &&
   list_field "effect_domains" summary <> [] &&
   list_field "return_effects" summary <> [] &&
   List.for_all (return_effect_ok summary) (list_field "return_effects" summary) &&
@@ -748,6 +752,12 @@ let run_false_case_checks manifest linked =
   v3_false_case "summary status corrupted" (fun json ->
       mutate_first_summary [ "summary_api_status" ] (`String "stale-or-public")
         json);
+  v3_false_case "summary language missing" (fun json ->
+      mutate_first_summary [ "summary_language" ] (`Assoc []) json);
+  v3_false_case "summary claim boundary corrupted" (fun json ->
+      mutate_first_summary [ "claim_boundary" ] (`String "arbitrary-C") json);
+  v3_false_case "memory effect language corrupted" (fun json ->
+    mutate_first_memory_delta ["memory_effect_summary"; "effect_operations"] (`List []) json);
   v3_false_case "missing return effect" (fun json ->
     match list_field "external_summaries" json with
     | first :: rest ->
@@ -1158,6 +1168,9 @@ let () =
               `String "external_summary_v1_compat_only";
               `String "external_summary_schema_downgrade";
               `String "external_summary_status_corruption";
+              `String "external_summary_language_missing";
+              `String "external_summary_claim_boundary_corruption";
+              `String "external_summary_memory_effect_language_corruption";
               `String "external_summary_return_effect_missing";
               `String "external_summary_memory_delta_missing";
               `String "external_summary_memory_delta_role_corruption";

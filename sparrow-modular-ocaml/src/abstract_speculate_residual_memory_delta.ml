@@ -6,10 +6,13 @@ module Cell = Abstract_speculate_itv_residual_cell
 
 let external_summary_schema_id = "abstract-speculate-external-summary/v3"
 let memory_delta_schema_id = "abstract-speculate-external-summary-memory-delta/v3"
+let summary_language_schema_id = "abstract-speculate-sparrow-itv-summary-language/v1"
 let taint_protocol_schema_id = "abstract-speculate-taint-product-component/v1"
 let product_pair_schema_id = "abstract-speculate-itv-taint-product-pair/v1"
 let summary_api_status = "prototype-internal"
 let witness_scope = "selected-sparrow-itv"
+let summary_scope = "sparrow-itv-fixture-evidence"
+let summary_claim_boundary = "fixture-evidence-only-no-arbitrary-c"
 
 let relation_failure_reasons = [
   "memory_delta_role_mismatch";
@@ -129,6 +132,124 @@ let taint_state_of_string = function
   | other -> Error ("unsupported taint state: " ^ other)
 
 let canonical_value_json value = Cell.canonical_value_json_of_legacy_string value
+
+let string_list_json xs = `List (List.map (fun x -> `String x) xs)
+
+let string_list_field name json =
+  list_field name json
+  |> List.filter_map (function `String s -> Some s | _ -> None)
+
+let semantic_descriptor ~semantic_kind ~evidence_required ~summary_constructs
+    ~status =
+  `Assoc
+    [
+      "semantic_kind", `String semantic_kind;
+      "evidence_required", string_list_json evidence_required;
+      "summary_constructs", string_list_json summary_constructs;
+      "status", `String status;
+    ]
+
+let summary_language_json () =
+  `Assoc
+    [
+      "schema_version", `String summary_language_schema_id;
+      "summary_scope", `String summary_scope;
+      "claim_boundary", `String summary_claim_boundary;
+      ( "expressible_semantics",
+        `List
+          [
+            semantic_descriptor ~semantic_kind:"return-value"
+              ~evidence_required:
+                [
+                  "typed-return-effect";
+                  "provider-stage2-output";
+                  "linked-derivation-effect-id";
+                ]
+              ~summary_constructs:[ "return_effects"; "typed_effects"; "typed_projections" ]
+              ~status:"covered-by-current-fixtures";
+            semantic_descriptor ~semantic_kind:"memory-load-store"
+              ~evidence_required:
+                [
+                  "memory_delta";
+                  "delta_chain";
+                  "typed-memory-transition";
+                  "source-rerun-itv-cell";
+                ]
+              ~summary_constructs:
+                [
+                  "memory_deltas";
+                  "delta_chains";
+                  "global_effects";
+                  "pointer_effects";
+                ]
+              ~status:"covered-by-current-and-expanded-sparrow-itv-fixtures";
+            semantic_descriptor ~semantic_kind:"pointer-alias-effect"
+              ~evidence_required:[ "alias_key"; "normalized_location"; "delta_chain" ]
+              ~summary_constructs:[ "pointer_effects"; "typed_memory_effects" ]
+              ~status:"fixture-language";
+            semantic_descriptor ~semantic_kind:"branch-join-summary"
+              ~evidence_required:[ "join-observation"; "source-rerun-itv-cell" ]
+              ~summary_constructs:[ "typed_projections"; "residual-equation-producer" ]
+              ~status:"fixture-language";
+            semantic_descriptor ~semantic_kind:"loop-fixpoint-summary"
+              ~evidence_required:[ "worklist-schedule"; "source-rerun-itv-cell" ]
+              ~summary_constructs:[ "global_residual_fixpoint"; "delta_chains" ]
+              ~status:"fixture-language";
+            semantic_descriptor ~semantic_kind:"api-model-effect"
+              ~evidence_required:
+                [
+                  "api-model-row";
+                  "api-semantic-provenance";
+                  "selected-observation-negative";
+                ]
+              ~summary_constructs:[ "api_residual_model_coverage"; "typed_effects" ]
+              ~status:"fixture-language";
+          ] );
+      ( "unsupported_semantics",
+        string_list_json
+          [
+            "arbitrary-C theorem";
+            "Oct";
+            "OctImpact";
+            "general Taint/product parity";
+            "alarm/report PE";
+          ] );
+    ]
+
+let summary_language_valid summary =
+  match assoc_field "summary_language" summary with
+  | Some (`Assoc _ as language) ->
+      string_field "schema_version" language = summary_language_schema_id
+      && string_field "summary_scope" language = summary_scope
+      && string_field "claim_boundary" language = summary_claim_boundary
+      && list_field "expressible_semantics" language <> []
+      && List.for_all
+           (fun semantic ->
+             string_field "semantic_kind" semantic <> ""
+             && list_field "evidence_required" semantic <> []
+             && list_field "summary_constructs" semantic <> []
+             && string_field "status" semantic <> "")
+           (list_field "expressible_semantics" language)
+      && List.mem "arbitrary-C theorem" (string_list_field "unsupported_semantics" language)
+      && List.mem "Oct" (string_list_field "unsupported_semantics" language)
+  | _ -> false
+
+let summary_effect_kind = function
+  | Global_write_read -> "memory-load-store"
+  | Pointer_memory_effect -> "pointer-alias-load-store"
+  | Taint_product_component -> "bounded-taint-product-component"
+
+let memory_effect_summary_json domain alias_key =
+  `Assoc
+    [
+      "summary_language_schema", `String summary_language_schema_id;
+      "summary_scope", `String summary_scope;
+      "summary_effect_kind", `String (summary_effect_kind domain);
+      "effect_operations", string_list_json [ "load"; "store" ];
+      "alias_relevant", `Bool (match domain with Pointer_memory_effect -> true | _ -> false);
+      "alias_key", (match alias_key with Some key -> `String key | None -> `Null);
+      "claim_boundary", `String summary_claim_boundary;
+    ]
 
 let make_taint_component_json
     ~witness_id
@@ -381,6 +502,10 @@ let delta_to_json d =
     "location", `String d.location.normalized_location;
     "normalized_location", `String d.location.normalized_location;
     "alias_key", (match d.location.alias_key with Some key -> `String key | None -> `Null);
+    "summary_language_schema", `String summary_language_schema_id;
+    "summary_scope", `String summary_scope;
+    "summary_effect_kind", `String (summary_effect_kind d.location.domain);
+    "memory_effect_summary", memory_effect_summary_json d.location.domain d.location.alias_key;
     "reader_role", `String "reader";
     "writer_role", `String "writer";
     "provider_role", `String "provider";
@@ -421,6 +546,9 @@ let compatibility_effect_json d =
     "derivation_source", `String "provider-stage2-output";
     "source_evidence_path", `String d.provenance.source_evidence_path;
     "witness_scope", `String witness_scope;
+    "summary_scope", `String summary_scope;
+    "summary_effect_kind", `String (summary_effect_kind d.location.domain);
+    "alias_key", (match d.location.alias_key with Some key -> `String key | None -> `Null);
     "compatibility_projection", `String "typed-effect-projection-non-authoritative";
     "legacy_delta_id", `String d.delta_id;
     "legacy_chain_id", `String d.chain_id;
@@ -435,10 +563,6 @@ let validation_result_json result =
   ]
 
 let add cond reason reasons = if cond then reasons else reason :: reasons
-
-let string_list_field name json =
-  list_field name json
-  |> List.filter_map (function `String s -> Some s | _ -> None)
 
 let supported_taint_state = function
   | "bottom" | "untainted" | "tainted-user-input" -> true
@@ -497,6 +621,16 @@ let validate_chain delta chain =
   |> add (List.for_all (fun entry -> string_field "chain_id" entry = string_field "chain_id" delta) entries) "memory_delta_chain_id_mismatch"
   |> add (List.for_all (fun entry -> string_field "chain_hash" entry = string_field "chain_hash" delta) entries) "memory_delta_chain_hash_mismatch"
 
+let memory_effect_summary_valid delta =
+  match assoc_field "memory_effect_summary" delta with
+  | Some (`Assoc _ as summary) ->
+      string_field "summary_language_schema" summary = summary_language_schema_id
+      && string_field "summary_scope" summary = summary_scope
+      && string_field "claim_boundary" summary = summary_claim_boundary
+      && string_field "summary_effect_kind" summary = string_field "summary_effect_kind" delta
+      && list_field "effect_operations" summary <> []
+  | _ -> false
+
 let validate_delta_json delta =
   let location = string_field "location" delta in
   let raw_location = string_field "raw_location" delta in
@@ -544,6 +678,10 @@ let validate_delta_json delta =
     |> add (provider_artifact_path <> "") "memory_delta_provenance_mismatch"
     |> add (provider_phase_index <> min_int) "memory_delta_provenance_mismatch"
     |> add (string_field "derivation_source" delta = "provider-stage2-output") "memory_delta_provenance_mismatch"
+    |> add (string_field "summary_language_schema" delta = summary_language_schema_id) "summary_language_schema_mismatch"
+    |> add (string_field "summary_scope" delta = summary_scope) "summary_scope_mismatch"
+    |> add (string_field "summary_effect_kind" delta <> "") "summary_language_schema_mismatch"
+    |> add (memory_effect_summary_valid delta) "summary_language_schema_mismatch"
     |> add (chain_id <> "" && string_field "chain_hash" delta <> "") "memory_delta_chain_missing"
     |> add (starts_with chain_id chain_id_provenance_prefix) "memory_delta_provenance_mismatch"
     |> add (string_field "chain_hash" delta = expected_chain_hash) "memory_delta_chain_hash_mismatch"
@@ -621,7 +759,9 @@ let validate_summary_json summary =
     |> add (string_field "schema_version" summary = external_summary_schema_id) "external_summary_schema_mismatch"
     |> add (string_field "memory_delta_schema" summary = memory_delta_schema_id) "memory_delta_schema_mismatch"
     |> add (string_field "summary_api_status" summary = summary_api_status) "summary_api_status_mismatch"
-    |> add (string_field "summary_scope" summary = "sparrow-itv-selected-witness") "summary_scope_mismatch"
+    |> add (string_field "summary_scope" summary = summary_scope) "summary_scope_mismatch"
+    |> add (string_field "summary_language_schema" summary = summary_language_schema_id) "summary_language_schema_mismatch"
+    |> add (summary_language_valid summary) "summary_language_schema_mismatch"
     |> add (deltas <> []) "memory_delta_chain_missing"
     |> add (chains <> []) "memory_delta_chain_missing"
     |> add (List.for_all (fun id -> id <> "" && List.mem id summary_chain_ids) delta_chain_ids) "memory_delta_chain_missing"

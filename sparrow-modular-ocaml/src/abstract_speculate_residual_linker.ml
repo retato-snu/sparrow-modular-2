@@ -203,7 +203,9 @@ let external_summary_to_json summary =
       [
         ("schema_version", `String MemoryDelta.external_summary_schema_id);
         ("summary_api_status", `String MemoryDelta.summary_api_status);
-        ("summary_scope", `String "sparrow-itv-selected-witness");
+        ("summary_scope", `String MemoryDelta.summary_scope);
+        ("summary_language_schema", `String MemoryDelta.summary_language_schema_id);
+        ("summary_language", MemoryDelta.summary_language_json ());
         ("memory_delta_schema", `String MemoryDelta.memory_delta_schema_id);
         ("memory_deltas", `List summary.memory_deltas);
         ("delta_chains", `List summary.delta_chains);
@@ -243,7 +245,10 @@ let external_summary_to_json summary =
       ("typed_projections", `List (List.map EffectSchema.projection_to_json summary.typed_projections));
       ("return_projection", return_projection);
       ("summary_api_status", `String EffectSchema.summary_api_status);
-      ("summary_scope", `String "sparrow-itv-selected-witness");
+      ("summary_scope", `String MemoryDelta.summary_scope);
+      ("summary_language_schema", `String MemoryDelta.summary_language_schema_id);
+      ("summary_language", MemoryDelta.summary_language_json ());
+      ("claim_boundary", `String MemoryDelta.summary_claim_boundary);
       ("memory_delta_schema", `String MemoryDelta.memory_delta_schema_id);
       ( "effect_domains",
         `List

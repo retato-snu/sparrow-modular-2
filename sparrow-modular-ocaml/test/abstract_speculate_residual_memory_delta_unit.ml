@@ -25,7 +25,9 @@ let summary delta =
   `Assoc [
     "schema_version", `String Delta.external_summary_schema_id;
     "summary_api_status", `String Delta.summary_api_status;
-    "summary_scope", `String "sparrow-itv-selected-witness";
+    "summary_scope", `String Delta.summary_scope;
+    "summary_language_schema", `String Delta.summary_language_schema_id;
+    "summary_language", Delta.summary_language_json ();
     "memory_delta_schema", `String Delta.memory_delta_schema_id;
     "memory_deltas", `List [Delta.delta_to_json delta];
     "delta_chains", `List [`Assoc ["chain_id", `String (Delta.chain_id delta); "entries", `List (Delta.delta_chain_json delta)]];
@@ -107,6 +109,18 @@ let () =
     (Delta.validate_delta_json (set_path ["delta_chain"] (`List []) (Delta.delta_to_json global)));
   expect_error_contains "memory_delta_chain_missing"
     (Delta.validate_summary_json (set_path ["delta_chains"] (`List []) (summary global)));
+  expect_error_contains "summary_scope_mismatch"
+    (Delta.validate_summary_json
+       (set_path ["summary_scope"] (`String "sparrow-itv-selected-witness")
+          (summary global)));
+  expect_error_contains "summary_language_schema_mismatch"
+    (Delta.validate_summary_json
+       (set_path ["summary_language"; "claim_boundary"] (`String "arbitrary-C")
+          (summary global)));
+  expect_error_contains "summary_language_schema_mismatch"
+    (Delta.validate_delta_json
+       (set_path ["memory_effect_summary"; "effect_operations"] (`List [])
+          (Delta.delta_to_json pointer)));
   expect_error_contains "taint_product_component_mismatch"
     (Delta.validate_taint_product_evidence_json (set_path ["product_components"] (`List [`String "Taint"]) taint));
   expect_error_contains "taint_product_relation_mismatch"

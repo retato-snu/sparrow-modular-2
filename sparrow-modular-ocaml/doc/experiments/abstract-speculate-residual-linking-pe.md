@@ -173,6 +173,14 @@ Each witness report emits `full_itv_semantic_relation` with:
 
 - `relation = "full-sparrow-itv-semantic-relation"`;
 - `domain = "sparrow-itv"`;
+- `semantic_universe_manifest.coverage_gate_schema =
+  "abstract-speculate-full-itv-semantic-universe-manifest/v2"`;
+- a fixture-only claim boundary and a selected-observation policy stating that
+  selected diagnostics are non-authoritative and cannot mask missing/full ITV
+  final-cell coverage failures;
+- required semantic-path evidence names:
+  `final_cell_coverage`, `typed_metadata_consistency`,
+  `source_rerun_evidence`, and `selected_observation_masking_negative`;
 - `semantic_universe` listing final tables, semantic exports, linked
   environment/call-effect evidence, completion/status evidence, provenance, and
   oracle identity;
@@ -195,6 +203,32 @@ Each witness report emits `full_itv_semantic_relation` with:
 The oracle-suite witness status and suite status are gated on
 `full_itv_semantic_relation.status`, not on the legacy selected-observation
 relation.
+
+### Expanded Sparrow-Itv fixture coverage boundary
+
+The current expanded fixture set is broader than the first full-ITV smoke
+fixture, but it is still not a general ItvDom.Mem theorem.  The mechanically
+checked paths are:
+
+- `load-store-global` for the `global_write_read` oracle-suite witness;
+- `load-store-pointer-alias` for the `pointer_memory_effect` witness;
+- `cycle-topology-fixpoint`, `callgraph-loop-fixpoint`, and
+  `branch-join-loop-fixpoint` for the cycle/callgraph/branch-join loop
+  witnesses; and
+- API model paths `api-model-memcpy`, `api-model-strcpy`, and
+  `api-model-strlen` in the focused API model coverage report.
+
+The oracle-suite report records these as
+`expanded_semantic_path_coverage.status = "pass"` only when each path has final
+cell coverage, typed metadata consistency, source-rerun evidence,
+selected-observation masking evidence, and path-specific negative cases.  The
+API report records the same boundary in `api_model_summary` and
+`semantic_universe_manifest` for the three supported API paths.
+
+Non-goals remain unchanged: no arbitrary-C theorem, no Oct/OctImpact claim, no
+general Taint/product parity beyond the named bounded witness, no general
+`ApiSem` coverage beyond the Slice 1 APIs, and no public/stable JSON schema
+promise.
 
 ## Selected-observation diagnostic relation
 
